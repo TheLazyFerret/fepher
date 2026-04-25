@@ -1,0 +1,8 @@
+# Formating options
+Language: "Cpp"
+BasedOnStyle: "LLVM"
+IndentWidth: 2 
+UseTab: "Never"
+BreakBeforeBraces: "Attach"
+ColumnLimit: 100
+PointerAlignment: "Left"
