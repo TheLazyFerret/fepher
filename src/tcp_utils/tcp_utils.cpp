@@ -159,3 +159,15 @@ std::expected<std::vector<uint8_t>, std::error_code> tcp_utils::recv_t(int fd, s
   buffer.resize(static_cast<std::size_t>(bytes_rec));
   return buffer;  
 }
+
+std::expected<std::pair<std::uint32_t, std::string>, std::error_code> tcp_utils::get_socket_addr(int fd) noexcept {
+  sockaddr_in aux_addr {};
+  socklen_t aux_addr_size = sizeof(aux_addr);
+  if (getsockname(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
+    RETURN_UNEXPECTED_EC_ERRNO;
+  }
+  /// This should not fail never.
+  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
+  const std::uint32_t port = ntohs(aux_addr.sin_port);
+  return std::make_pair(port, addr);
+}
