@@ -4,9 +4,8 @@ project(fepher)
 set(CMAKE_CXX_STANDARD 23)
 
 set(SOURCE_FILES
-  src/tcp/tcp.cpp
-  src/tpool/tpool.cpp
-  src/common.cpp
+  src/tcp_utils/tcp_utils.cpp
+  src/common/common.cpp
   src/main.cpp
 )
 
