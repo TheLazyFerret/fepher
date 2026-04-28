@@ -11,4 +11,4 @@ set(SOURCE_FILES
 
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 
-#target_compile_options(fepher PRIVATE -g)
+target_compile_options(fepher PRIVATE -g)
