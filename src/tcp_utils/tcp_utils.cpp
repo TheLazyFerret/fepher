@@ -116,7 +116,7 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
     return std::unexpected(result_set_sockops.error());
   }
   // Bind the socket.
-  if (bind(socket_fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) < 0) {
+  if (bind(socket_fd, reinterpret_cast<const sockaddr*>(&result_addr.value()), sizeof(addr)) < 0) {
     close(socket_fd);
     RETURN_UNEXPECTED_EC_ERRNO;
   }
