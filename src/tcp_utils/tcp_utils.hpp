@@ -24,7 +24,9 @@ std::expected<void, std::error_code> set_socket_opts(int, SocketOption) noexcept
 
 std::expected<in_addr_t, std::error_code> to_net_addr(const std::string&) noexcept;
 std::expected<std::string, std::error_code> to_str_addr(in_addr_t) noexcept;
-std::expected<std::pair<std::uint32_t, std::string>, std::error_code> get_socket_addr(int) noexcept;
+
+std::expected<std::pair<std::uint32_t, std::string>, std::error_code> get_socket_local_addr(int) noexcept;
+std::expected<std::pair<std::uint32_t, std::string>, std::error_code> get_socket_remote_addr(int) noexcept;
 
 std::expected<sockaddr_in, std::error_code> make_sockaddr(std::uint32_t, const std::string&) noexcept;
 
