@@ -2,17 +2,23 @@
 
 #include "./server.hpp"
 #include "../common/common.hpp"
+#include "../gopher/gopher.hpp"
 
+#include <cerrno>
 #include <expected>
 #include <format>
 #include <string_view>
+#include <sys/ucontext.h>
 #include <system_error>
 
 #include <sys/epoll.h>
 #include <unistd.h>
 
+#define RETURN_UNEXPECTED_EC_ERRNO return std::unexpected(std::error_code(errno, std::generic_category()))
+
 using namespace server;
 using namespace tcp_utils;
+using namespace gopher;
 
 /// Close all the inner file descriptors.
 void GopherServer::destroy() noexcept {
@@ -58,7 +64,7 @@ std::expected<void, std::error_code> GopherServer::add_connection(tcp_utils::soc
   event.data.fd = socket;
   event.events = EPOLLIN | EPOLLET; // At the begin, all connections expect input. Edge trigered.
   if (epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, socket, &event) < 0) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+    RETURN_UNEXPECTED_EC_ERRNO;
   }
   return {};
 }
@@ -74,7 +80,7 @@ std::expected<void, std::error_code> GopherServer::switchout_connection(tcp_util
   event.data.fd = socket;
   event.events = EPOLLOUT | EPOLLET; // Only output (and edge trigered).
   if (epoll_ctl(this->epoll_fd, EPOLL_CTL_MOD, socket, &event) < 0) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+    RETURN_UNEXPECTED_EC_ERRNO;
   }
   return {};
 }
@@ -130,7 +136,7 @@ std::expected<GopherServer, std::error_code> GopherServer::build(std::string_vie
     close(server.listen_fd);
     close(server.epoll_fd);
     common::print_error("Error creating server");
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+    RETURN_UNEXPECTED_EC_ERRNO;
   }
   // Should never fail.
   const auto address = tcp_utils::get_socket_local_addr(server.listen_fd).value();
@@ -143,7 +149,75 @@ std::expected<GopherServer, std::error_code> GopherServer::build(std::string_vie
 std::expected<epoll_t, std::error_code> GopherServer::create_epoll() noexcept {
   epoll_t epoll_fd = epoll_create1(0);
   if (epoll_fd < 0) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+    RETURN_UNEXPECTED_EC_ERRNO;
   }
   return {epoll_fd};
+}
+
+/// Main function.
+std::expected<void, std::error_code> GopherServer::run() noexcept { 
+  return {};
+  struct epoll_event events[MAX_EVENTS] {};
+  while (true) {
+    const auto nfds = epoll_wait(this->epoll_fd, events, MAX_EVENTS, -1);
+    if (nfds < 0) {
+      common::print_error("Error epoll wait");
+      std::unexpected(std::error_code(errno, std::generic_category()));
+    }
+    for (int n = 0; n < nfds; ++n) {
+      if (events[n].data.fd == this->listen_fd) {
+        
+      }
+    }
+  }
+}
+
+/// Recv function nonblocking wrapper.
+/// Grab all the data currently avaible in the socket.
+std::expected<void, std::error_code> GopherServer::connection_recv(socket_t fd, ConnectionStatus& st) noexcept {
+  auto& buffer = st.receive_buffer;
+  auto& buffer_index = st.receive_index;
+  while (buffer_index < buffer.size()) {
+    const ssize_t received = recv(fd, buffer.data() + buffer_index, buffer.size() - buffer_index, 0);
+    // Data received.
+    if (received > 0) {
+      buffer_index += static_cast<std::size_t>(received);
+      continue;
+    }
+    // Connection closed.
+    else if (received  == 0) {
+      return std::unexpected(std::make_error_code(std::errc::connection_reset));
+    }
+    // No data avaible, try later.
+    else if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      break;
+    }
+    // Error.
+    RETURN_UNEXPECTED_EC_ERRNO;
+  }
+  return {};
+}
+
+std::expected<void, std::error_code> GopherServer::handle_connection(socket_t fd, ConnectionStatus& st) noexcept {
+  if (!st.receiving_finished) {
+    if (const auto e = GopherServer::connection_recv(fd, st); !e.has_value()) {
+      return std::unexpected(e.error());
+    }
+    const std::string current_message (st.receive_buffer.begin(), st.receive_buffer.begin() + st.receive_index);
+    if (gopher::string_end_in_terminator(current_message)) {
+      st.receiving_finished = true;
+      if (const auto e = switchout_connection(fd); !e.has_value()) {
+        return std::unexpected(e.error());
+      }
+      return {};
+    }
+    else if (st.receive_index >= st.receive_buffer.size()) {
+      if (const auto e = close_connection(fd); !e.has_value()) {
+        return std::unexpected(e.error());
+      }
+      return {};
+    }
+  }
+  // todo
+  return {};
 }

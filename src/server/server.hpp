@@ -18,6 +18,7 @@ using epoll_t = int;
 
 constexpr std::size_t MAX_MESSAGE_LENGTH = 1024;
 constexpr std::size_t BAKCLOG = 10;
+constexpr std::size_t MAX_EVENTS = 20;
 
 /// Represents each connection and its state.
 struct ConnectionStatus {
@@ -38,6 +39,8 @@ public:
   inline ~GopherServer() noexcept { destroy(); }         // Destructor.
 
   static std::expected<GopherServer, std::error_code> build(std::string_view, std::uint16_t) noexcept;
+  
+  std::expected<void, std::error_code> run() noexcept;
 
 private:
   inline GopherServer() noexcept : epoll_fd(-1), listen_fd(-1) {} // Default constructor.
@@ -47,6 +50,10 @@ private:
   std::expected<void, std::error_code> close_connection(tcp_utils::socket_t) noexcept;
   std::expected<void, std::error_code> add_connection(tcp_utils::socket_t) noexcept;
   std::expected<void, std::error_code> switchout_connection(tcp_utils::socket_t) noexcept;
+  
+  static std::expected<void, std::error_code> connection_recv(tcp_utils::socket_t, ConnectionStatus&) noexcept;
+  
+  std::expected<void, std::error_code> handle_connection(tcp_utils::socket_t, ConnectionStatus&) noexcept;
   
   static std::expected<epoll_t, std::error_code> create_epoll() noexcept;
   
