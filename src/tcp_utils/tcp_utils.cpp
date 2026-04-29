@@ -21,7 +21,7 @@
 #define RETURN_UNEXPECTED_EC_ERRNO return std::unexpected(std::error_code(errno, std::generic_category()))
 
 /// Set the chosen options to a socket that is not already binded.
-std::expected<void, std::error_code> tcp_utils::set_socket_opts(int fd, SocketOption ops) noexcept {
+std::expected<void, std::error_code> tcp_utils::set_socket_opts(int fd, SocketOptions ops) noexcept {
   // Enable the fast reusing of the port after the program ends.
   if (ops.so_reuseaddr) {
     constexpr int enable = 1;
@@ -98,7 +98,7 @@ std::expected<sockaddr_in, std::error_code> tcp_utils::make_sockaddr(
 }
 
 std::expected<int, std::error_code> tcp_utils::create_listen_socket(
-    std::uint32_t port, const std::string& addr, SocketOption ops, std::uint32_t backlog) noexcept {
+    std::uint32_t port, const std::string& addr, SocketOptions ops, std::uint32_t backlog) noexcept {
   // Creates the sockaddr_in before anything else, So if it fails, it does quickly.
   const auto result_addr = tcp_utils::make_sockaddr(port, addr);
   if (!result_addr.has_value()) {

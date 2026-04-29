@@ -32,7 +32,7 @@ TcpListener& TcpListener::operator=(TcpListener&& e) noexcept {
 
 /// Returns an instance of a TCPListener, or an error if something bad happens.
 std::expected<TcpListener, std::error_code> TcpListener::build(
-    std::uint16_t port, const std::string& str_addr, SocketOption ops, std::uint16_t backlog) noexcept {
+    std::uint16_t port, const std::string& str_addr, SocketOptions ops, std::uint16_t backlog) noexcept {
   // Creates the sockaddr_in before anything else, So if it fails, it does quickly.
   const auto result_addr = make_sockaddr(port, str_addr);
   if (!result_addr.has_value()) {

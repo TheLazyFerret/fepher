@@ -11,7 +11,7 @@
 /// Options used by the listener socket (wrapper for setsockopt)
 /// Not all the options are here, only the ones used.
 /// The default values are equivalent to not setting them.
-struct SocketOption {
+struct SocketOptions {
   bool so_reuseaddr = false;
   std::uint32_t so_sndtimeo = 0;
   std::uint32_t so_rcvtimeo = 0;
@@ -33,7 +33,7 @@ public:
   std::expected<TcpConnection, std::error_code> accept_connection() const noexcept;
 
   static std::expected<TcpListener, std::error_code> build(
-      std::uint16_t, const std::string&, SocketOption, std::uint16_t) noexcept;
+      std::uint16_t, const std::string&, SocketOptions, std::uint16_t) noexcept;
 
 private:
   void destroy() noexcept;

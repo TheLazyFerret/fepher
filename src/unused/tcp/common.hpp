@@ -17,8 +17,8 @@
 
 namespace tcp_common {
 
-/// Auxiliar method for setting all set options in the SocketOption struct
-inline std::expected<void, std::error_code> set_socket_options(int fd, SocketOption ops) noexcept {
+/// Auxiliar method for setting all set options in the SocketOptions struct
+inline std::expected<void, std::error_code> set_socket_options(int fd, SocketOptions ops) noexcept {
   /// Enable the fast reusing of the port after the program closes.
   if (ops.so_reuseaddr) {
     constexpr int enable = 1;

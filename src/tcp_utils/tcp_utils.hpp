@@ -13,7 +13,7 @@ namespace tcp_utils {
 /// Options used by the listener socket (wrapper for setsockopt)
 /// Not all the options are here, only the ones used.
 /// The default values are equivalent to not setting them.
-struct SocketOption {
+struct SocketOptions {
   bool so_reuseaddr = false;
   std::uint32_t so_sndtimeo = 0;
   std::uint32_t so_rcvtimeo = 0;
@@ -22,7 +22,7 @@ struct SocketOption {
 
 /// Set the chosen options to a socket that is not already binded.
 /// This function should not be called directly, due it already is in create_listen_socket().
-std::expected<void, std::error_code> set_socket_opts(int, SocketOption) noexcept;
+std::expected<void, std::error_code> set_socket_opts(int, SocketOptions) noexcept;
 /// Return a ready-to-use sockaddr_in, with the correctly formated port and IPv4 address.
 /// Again, this function should not be called directly, due it already is in create_listen_socket().
 std::expected<sockaddr_in, std::error_code> make_sockaddr(std::uint32_t, const std::string&) noexcept;
@@ -40,7 +40,7 @@ std::expected<std::pair<std::uint32_t, std::string>, std::error_code> get_socket
 /// Create a listen, ready to connect TCP socket.
 /// Parameters: (port, IPv4 address, options, max connection queue).
 std::expected<int, std::error_code> create_listen_socket(
-    std::uint32_t, const std::string&, SocketOption, std::uint32_t) noexcept;
+    std::uint32_t, const std::string&, SocketOptions, std::uint32_t) noexcept;
 
 /// Attempts to send all the bytes in the vector through the connected socket.
 std::expected<void, std::error_code> send_t(int, const std::vector<uint8_t>&) noexcept;
