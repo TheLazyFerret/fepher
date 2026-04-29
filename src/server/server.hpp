@@ -31,24 +31,29 @@ struct ConnectionStatus {
 /// Gopher server class.
 class GopherServer {
 public:
-  GopherServer() = delete;                               // Default constructor.
   GopherServer(const GopherServer&) = delete;            // Copy constructor.
   GopherServer& operator=(const GopherServer&) = delete; // Copy assignment.
   GopherServer(GopherServer&&) noexcept;                 // Move constructor.
   GopherServer& operator=(GopherServer&&) noexcept;      // Move assignment.
   inline ~GopherServer() noexcept { destroy(); }         // Destructor.
 
+  static std::expected<GopherServer, std::error_code> build(std::string_view, std::uint16_t) noexcept;
 
 private:
+  inline GopherServer() noexcept : epoll_fd(-1), listen_fd(-1) {} // Default constructor.
+
   void destroy() noexcept;
 
   std::expected<void, std::error_code> close_connection(tcp_utils::socket_t) noexcept;
   std::expected<void, std::error_code> add_connection(tcp_utils::socket_t) noexcept;
   std::expected<void, std::error_code> switchout_connection(tcp_utils::socket_t) noexcept;
-
-  epoll_t epoll_fd = -1;                                                 // epoll file descriptor.
-  tcp_utils::socket_t listen_fd = -1;                                    // Listen socket.
+  
+  static std::expected<epoll_t, std::error_code> create_epoll() noexcept;
+  
+  epoll_t epoll_fd;                                                      // epoll file descriptor.
+  tcp_utils::socket_t listen_fd;                                         // Listen socket.
   std::unordered_map<tcp_utils::socket_t, ConnectionStatus> connections; // Connections map.
 };
+
 
 } // namespace server
