@@ -4,7 +4,6 @@
 
 #include <cerrno>
 #include <cstdint>
-#include <cstring>
 #include <ctime>
 #include <expected>
 #include <string>
@@ -20,8 +19,10 @@
 
 #define RETURN_UNEXPECTED_EC_ERRNO return std::unexpected(std::error_code(errno, std::generic_category()))
 
+using namespace tcp_utils;
+
 /// Set the chosen options to a socket that is not already binded.
-std::expected<void, std::error_code> tcp_utils::set_socket_opts(int fd, SocketOptions ops) noexcept {
+std::expected<void, std::error_code> tcp_utils::set_socket_opts(socket_t fd, SocketOptions ops) noexcept {
   // Enable the fast reusing of the port after the program ends.
   if (ops.so_reuseaddr) {
     constexpr int enable = 1;
@@ -57,6 +58,20 @@ std::expected<void, std::error_code> tcp_utils::set_socket_opts(int fd, SocketOp
   return {};
 }
 
+/// Return a ready-to-use sockaddr_in for IPv4.
+std::expected<sockaddr_in, std::error_code> tcp_utils::make_sockaddr(
+    std::uint16_t port, const std::string& addr) noexcept {
+  const auto net_addr = to_net_addr(addr);
+  if (!net_addr.has_value()) {
+    return std::unexpected(net_addr.error());
+  }
+  sockaddr_in sockaddr{};
+  sockaddr.sin_family = AF_INET;
+  sockaddr.sin_addr.s_addr = net_addr.value();
+  sockaddr.sin_port = htons(port);
+  return {sockaddr};
+}
+
 /// Convert an string IPv4 address into a net address.
 std::expected<in_addr_t, std::error_code> tcp_utils::to_net_addr(const std::string& straddr) noexcept {
   in_addr addr;
@@ -82,26 +97,41 @@ std::expected<std::string, std::error_code> tcp_utils::to_str_addr(in_addr_t ina
   return {aux_dst};
 }
 
-/// Return a ready-to-use sockaddr_in for IPv4.
-std::expected<sockaddr_in, std::error_code> tcp_utils::make_sockaddr(
-    std::uint32_t port, const std::string& addr) noexcept {
-  const auto net_addr = to_net_addr(addr);
-  if (!net_addr.has_value()) {
-    return std::unexpected(net_addr.error());
+/// Return the local port and address a socket is connected to.
+std::expected<SocketAddress, std::error_code> tcp_utils::get_socket_local_addr(socket_t fd) noexcept {
+  sockaddr_in aux_addr{}; // Initialize it (empty).
+  socklen_t aux_addr_size = sizeof(aux_addr);
+  if (getsockname(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
+    RETURN_UNEXPECTED_EC_ERRNO;
   }
-  sockaddr_in sockaddr;
-  std::memset(&sockaddr, 0, sizeof(sockaddr)); // Set explicitly all bytes to 0.
-  sockaddr.sin_family = AF_INET;
-  sockaddr.sin_addr.s_addr = net_addr.value();
-  sockaddr.sin_port = htons(port);
-  return {sockaddr};
+  // This should never fail.
+  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
+  const std::uint16_t port = ntohs(aux_addr.sin_port);
+  return SocketAddress{addr, port};
 }
 
+/// Return the remote port and address a socket is connected to.
+std::expected<SocketAddress, std::error_code> tcp_utils::get_socket_remote_addr(socket_t fd) noexcept {
+  sockaddr_in aux_addr{}; // Initialize it (empty).
+  socklen_t aux_addr_size = sizeof(aux_addr);
+  if (getpeername(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
+    RETURN_UNEXPECTED_EC_ERRNO;
+  }
+  // This should never fail.
+  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
+  const std::uint16_t port = ntohs(aux_addr.sin_port);
+  return SocketAddress{addr, port};
+}
+
+/// Create a listen, ready to connect TCP socket.
+/// I prefered don't use SocketAddress in the parameters to allow and easier way of sending a reference
+/// instead of a rvalue.
 std::expected<int, std::error_code> tcp_utils::create_listen_socket(
-    std::uint32_t port, const std::string& addr, SocketOptions ops, std::uint32_t backlog) noexcept {
+    std::uint16_t port, const std::string& addr, SocketOptions ops, std::uint32_t backlog) noexcept {
   // Creates the sockaddr_in before anything else, So if it fails, it does quickly.
   const auto result_addr = tcp_utils::make_sockaddr(port, addr);
   if (!result_addr.has_value()) {
+    // Fordward the error from make_sockaddr()
     return std::unexpected(result_addr.error());
   }
   // Create the socket
@@ -116,7 +146,8 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
     return std::unexpected(result_set_sockops.error());
   }
   // Bind the socket.
-  if (bind(socket_fd, reinterpret_cast<const sockaddr*>(&result_addr.value()), sizeof(addr)) < 0) {
+  const auto aux_sockaddr = result_addr.value();
+  if (bind(socket_fd, reinterpret_cast<const sockaddr*>(&aux_sockaddr), sizeof(aux_sockaddr)) < 0) {
     close(socket_fd);
     RETURN_UNEXPECTED_EC_ERRNO;
   }
@@ -129,57 +160,14 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
 }
 
 /// Attempts to send all the bytes in the src vector.
-std::expected<void, std::error_code> tcp_utils::send_t(int fd, const std::vector<uint8_t>& src) noexcept {
-  if (src.size() == 0) {
-    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
-  }
-  ssize_t bytes_sent = 0;
-  while (bytes_sent < src.size()) {
-    const ssize_t aux_bytes_sent = send(fd, src.data() + bytes_sent, src.size() - bytes_sent, 0);
-    if (aux_bytes_sent < 0) {
-      RETURN_UNEXPECTED_EC_ERRNO;
-    } else if (aux_bytes_sent == 0) {
-      return std::unexpected(std::make_error_code(std::errc::connection_reset));
-    }
-    bytes_sent += aux_bytes_sent;
-  }
-  return {};  
+std::expected<void, std::error_code> tcp_utils::send_bytes(socket_t fd, const std::vector<uint8_t>& src) noexcept {
+  // todo!
+  return {};
 }
 
 /// Attempts to receive at most len bytes from the connection.
 /// Will return a vector with the size of the number of bytes received.
-std::expected<std::vector<uint8_t>, std::error_code> tcp_utils::recv_t(int fd, std::size_t len) noexcept {
-  std::vector<uint8_t> buffer(len, 0);
-  const ssize_t bytes_rec = recv(fd, buffer.data(), len, 0);
-  if (bytes_rec < 0) {
-    RETURN_UNEXPECTED_EC_ERRNO;
-  } else if (bytes_rec == 0) {
-    return std::unexpected(std::make_error_code(std::errc::connection_reset));
-  }
-  buffer.resize(static_cast<std::size_t>(bytes_rec));
-  return buffer;  
-}
-
-std::expected<std::pair<std::uint32_t, std::string>, std::error_code> tcp_utils::get_socket_local_addr(int fd) noexcept {
-  sockaddr_in aux_addr {};
-  socklen_t aux_addr_size = sizeof(aux_addr);
-  if (getsockname(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
-    RETURN_UNEXPECTED_EC_ERRNO;
-  }
-  // This should never fail.
-  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
-  const std::uint32_t port = ntohs(aux_addr.sin_port);
-  return std::make_pair(port, addr);
-}
-
-std::expected<std::pair<std::uint32_t, std::string>, std::error_code> tcp_utils::get_socket_remote_addr(int fd) noexcept {
-  sockaddr_in aux_addr {};
-  socklen_t aux_addr_size = sizeof(aux_addr);
-  if (getpeername(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
-    RETURN_UNEXPECTED_EC_ERRNO;
-  }
-  // This should never fail
-  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
-  const std::uint32_t port = ntohs(aux_addr.sin_port);
-  return std::make_pair(port, addr);
+std::expected<std::vector<uint8_t>, std::error_code> tcp_utils::recv_bytes(socket_t fd, std::size_t len) noexcept {
+  // todo!
+  return {};
 }
