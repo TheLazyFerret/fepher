@@ -52,9 +52,11 @@ std::expected<socket_t, std::error_code> create_listen_socket(
     std::uint16_t port, const std::string& addr, SocketOptions ops, std::uint32_t backlog) noexcept;
 
 /// Attempts to send all the bytes in the vector through the connected socket.
-std::expected<void, std::error_code> send_bytes(socket_t socket, const std::vector<uint8_t>& buffer) noexcept;
+/// The function assumes the socket is set in blocking mode.
+std::expected<void, std::error_code> blocking_send(socket_t socket, const std::vector<uint8_t>& buffer) noexcept;
 /// Attempts to receive at most len bytes. The data retrieved will be returned in the form
 /// of a vector, being its size the ammount of bytes retrieved.
-std::expected<std::vector<uint8_t>, std::error_code> recv_bytes(socket_t socket, std::size_t buffer) noexcept;
+/// The function assumes the socket is set in blocking mode.
+std::expected<std::vector<uint8_t>, std::error_code> blocking_recv(socket_t socket, std::size_t len) noexcept;
 
 } // namespace tcp_utils

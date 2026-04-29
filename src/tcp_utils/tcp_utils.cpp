@@ -159,15 +159,60 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
   return socket_fd;
 }
 
-/// Attempts to send all the bytes in the src vector.
-std::expected<void, std::error_code> tcp_utils::send_bytes(socket_t fd, const std::vector<uint8_t>& src) noexcept {
-  // todo!
+/// Attempts to send all the bytes in the src vector. If no error occurs, all bytes are sent.
+/// The flag MSG_NOSIGNAL is used, so the program not crash if the connection is broken.
+/// The function assumes the socket is set in blocking mode.
+std::expected<void, std::error_code> tcp_utils::blocking_send(socket_t fd, const std::vector<uint8_t>& src) noexcept {
+  if (src.size() == 0) {
+    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+  }
+  std::size_t total_bytes_sent = 0;
+  while (total_bytes_sent < src.size()) {
+    const ssize_t bytes_sent = send(fd, src.data() + total_bytes_sent, src.size() - total_bytes_sent, MSG_NOSIGNAL);
+    // Normal continue.
+    if (bytes_sent > 0) {
+      total_bytes_sent += static_cast<std::size_t>(bytes_sent);
+      continue;
+    }
+    // Retry the last sent block.
+    else if (bytes_sent < 0 && errno == EINTR) {
+      continue;
+    }
+    // Weird error (disconnected).
+    else if (bytes_sent == 0) {
+      return std::unexpected(std::make_error_code(std::errc::broken_pipe));
+    }
+    RETURN_UNEXPECTED_EC_ERRNO;
+  }
   return {};
 }
 
 /// Attempts to receive at most len bytes from the connection.
 /// Will return a vector with the size of the number of bytes received.
-std::expected<std::vector<uint8_t>, std::error_code> tcp_utils::recv_bytes(socket_t fd, std::size_t len) noexcept {
-  // todo!
-  return {};
+/// The function assumes the socket is set in blocking mode.
+std::expected<std::vector<uint8_t>, std::error_code> tcp_utils::blocking_recv(socket_t fd, std::size_t len) noexcept {
+  if (len == 0) {
+    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+  }
+  std::vector<uint8_t> buffer(len, 0);
+  std::size_t total_bytes_received = 0;
+  while (total_bytes_received < len) {
+    const ssize_t bytes_received = recv(fd, buffer.data() + total_bytes_received, len - total_bytes_received, 0);
+    // Normal continue.
+    if (bytes_received > 0) {
+      total_bytes_received += static_cast<std::size_t>(bytes_received);
+      continue;
+    }
+    // Retry the last received block.
+    else if (bytes_received < 0 && errno == EINTR) {
+      continue;
+    }
+    // No more data.
+    else if (bytes_received == 0) {
+      break;
+    }
+    RETURN_UNEXPECTED_EC_ERRNO;
+  }
+  buffer.resize(total_bytes_received);
+  return {buffer};
 }
