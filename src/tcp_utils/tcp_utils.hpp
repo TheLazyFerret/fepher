@@ -1,5 +1,7 @@
 // Some TCP sockets utilities.
 
+#pragma once
+
 #include <cstdint>
 #include <expected>
 #include <string>
