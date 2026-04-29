@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(SOURCE_FILES
   src/tcp_utils/tcp_utils.cpp
   src/common/common.cpp
+  src/server/server.cpp
   src/main.cpp
 )
 
