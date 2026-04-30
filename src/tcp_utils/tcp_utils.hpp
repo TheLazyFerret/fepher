@@ -31,17 +31,16 @@ struct SocketAddress {
 /// Small redefine for a more clear interface.
 using socket_t = int;
 
-/// Set the chosen options to a socket that is not already binded.
-/// This function should not be called directly, due it already is in create_listen_socket().
+/// Set the chosen options to a socket.
 std::expected<void, std::error_code> set_socket_opts(socket_t socket, SocketOptions ops) noexcept;
+
 /// Return a ready-to-use sockaddr_in, with the correctly formated port and IPv4 address.
-/// Again, this function should not be called directly, due it already is in create_listen_socket().
 std::expected<sockaddr_in, std::error_code> make_sockaddr(std::uint16_t port, const std::string& addr) noexcept;
 
 /// From a human readeable IPv4 address return a net form address.
 std::expected<in_addr_t, std::error_code> to_net_addr(const std::string& addr) noexcept;
 /// From a net IPv4 form address return a human redeable address.
-std::expected<std::string, std::error_code> to_str_addr(in_addr_t addr) noexcept;
+std::string to_str_addr(in_addr_t addr) noexcept;
 
 /// Return the local port and address a socket is connected to.
 std::expected<SocketAddress, std::error_code> get_socket_local_addr(socket_t socket) noexcept;
@@ -49,16 +48,17 @@ std::expected<SocketAddress, std::error_code> get_socket_local_addr(socket_t soc
 std::expected<SocketAddress, std::error_code> get_socket_remote_addr(socket_t socket) noexcept;
 
 /// Create a listen, ready to connect TCP socket.
-std::expected<socket_t, std::error_code> create_listen_socket(
-    std::uint16_t port, const std::string& addr, SocketOptions ops, std::uint32_t backlog) noexcept;
+std::expected<socket_t, std::error_code> create_listen_socket(sockaddr_in addr, std::uint32_t backlog) noexcept;
 
 /// Attempts to accept an incoming connection.
 std::expected<socket_t, std::error_code> accept_connection(socket_t) noexcept;
 
 /// -- All this functions are for checking values.
 
+/// Check if the parameter (should be errno) is a nonblocking error for try again.
 bool try_again_later(int) noexcept;
 
+/// Check if the parameter (should be errno) is a connection closed (in most of his ways).
 bool connection_closed(int) noexcept;
 
 } // namespace tcp_utils

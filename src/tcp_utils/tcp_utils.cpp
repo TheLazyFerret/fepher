@@ -8,6 +8,7 @@
 #include <expected>
 #include <string>
 #include <system_error>
+#include <cassert>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -15,7 +16,6 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
-
 
 using namespace tcp_utils;
 
@@ -57,6 +57,7 @@ std::expected<void, std::error_code> tcp_utils::set_socket_opts(socket_t fd, Soc
 }
 
 /// Return a ready-to-use sockaddr_in for IPv4.
+/// Only should fail if the string addr is not a valid IPv4 address.
 std::expected<sockaddr_in, std::error_code> tcp_utils::make_sockaddr(
     std::uint16_t port, const std::string& addr) noexcept {
   const auto net_addr = to_net_addr(addr);
@@ -75,9 +76,8 @@ std::expected<in_addr_t, std::error_code> tcp_utils::to_net_addr(const std::stri
   in_addr addr;
   const int aux_result = inet_pton(AF_INET, straddr.c_str(), &addr);
   // In the very unlikely the protocol is incorrect.
-  if (aux_result < 0) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
-  }
+  // If this assertion fail, very probably is a programming error.
+  assert(aux_result >= 0);
   // In the most likely of a bad formated address.
   if (aux_result == 0) {
     return std::unexpected(std::make_error_code(std::errc::invalid_argument));
@@ -86,66 +86,49 @@ std::expected<in_addr_t, std::error_code> tcp_utils::to_net_addr(const std::stri
 }
 
 /// Convert a net IPv4 address into a string address.
-std::expected<std::string, std::error_code> tcp_utils::to_str_addr(in_addr_t inaddr) noexcept {
+std::string tcp_utils::to_str_addr(in_addr_t inaddr) noexcept {
   char aux_dst[INET_ADDRSTRLEN];
   const in_addr aux_addr = {.s_addr = inaddr};
-  if (inet_ntop(AF_INET, &aux_addr, aux_dst, sizeof(aux_dst)) == nullptr) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
-  }
+  // This should never fail. If it does, probably is a programming error.
+  assert (inet_ntop(AF_INET, &aux_addr, aux_dst, sizeof(aux_dst)) != nullptr);
   return {aux_dst};
 }
 
 /// Return the local port and address a socket is connected to.
+/// Only should fail if fd is not a valid socket.
 std::expected<SocketAddress, std::error_code> tcp_utils::get_socket_local_addr(socket_t fd) noexcept {
   sockaddr_in aux_addr{}; // Initialize it (empty).
   socklen_t aux_addr_size = sizeof(aux_addr);
   if (getsockname(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
-  // This should never fail.
-  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
+  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr);
   const std::uint16_t port = ntohs(aux_addr.sin_port);
   return SocketAddress{addr, port};
 }
 
 /// Return the remote port and address a socket is connected to.
+/// Should only fail if the fd is a not valid and connected socket.
 std::expected<SocketAddress, std::error_code> tcp_utils::get_socket_remote_addr(socket_t fd) noexcept {
   sockaddr_in aux_addr{}; // Initialize it (empty).
   socklen_t aux_addr_size = sizeof(aux_addr);
   if (getpeername(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
-  // This should never fail.
-  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
+  const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr);
   const std::uint16_t port = ntohs(aux_addr.sin_port);
   return SocketAddress{addr, port};
 }
 
 /// Create a listen, ready to connect TCP socket.
-/// I prefered don't use SocketAddress in the parameters to allow and easier way of sending a reference
-/// instead of a rvalue.
-std::expected<int, std::error_code> tcp_utils::create_listen_socket(
-    std::uint16_t port, const std::string& addr, SocketOptions ops, std::uint32_t backlog) noexcept {
-  // Creates the sockaddr_in before anything else, So if it fails, it does quickly.
-  const auto result_addr = tcp_utils::make_sockaddr(port, addr);
-  if (!result_addr.has_value()) {
-    // Fordward the error from make_sockaddr()
-    return std::unexpected(result_addr.error());
-  }
+std::expected<int, std::error_code> tcp_utils::create_listen_socket(sockaddr_in addr, std::uint32_t backlog) noexcept {
   // Create the socket
   const int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (socket_fd < 0) {
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
-  // Set the options.
-  const auto result_set_sockops = tcp_utils::set_socket_opts(socket_fd, ops);
-  if (!result_set_sockops.has_value()) {
-    close(socket_fd);
-    return std::unexpected(result_set_sockops.error());
-  }
   // Bind the socket.
-  const auto aux_sockaddr = result_addr.value();
-  if (bind(socket_fd, reinterpret_cast<const sockaddr*>(&aux_sockaddr), sizeof(aux_sockaddr)) < 0) {
+  if (bind(socket_fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) < 0) {
     close(socket_fd);
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
@@ -154,7 +137,7 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
     close(socket_fd);
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
-  return socket_fd;
+  return {socket_fd};
 }
 
 /// -- All this functions are for checking values.
@@ -162,14 +145,14 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
 /// Check if the error is the kind of "connection closed".
 bool tcp_utils::connection_closed(int error) noexcept {
   switch (error) {
-    case ECONNABORTED:
-    case EPIPE:
-    case ECONNRESET:
-    case ENOTCONN:
-    case ETIMEDOUT:
-      return true;
-    default:
-      return false;
+  case ECONNABORTED:
+  case EPIPE:
+  case ECONNRESET:
+  case ENOTCONN:
+  case ETIMEDOUT:
+    return true;
+  default:
+    return false;
   }
 }
 
