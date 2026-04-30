@@ -7,7 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
-#include <string_view>
+#include <sys/socket.h>
 #include <system_error>
 #include <unordered_map>
 #include <vector>
@@ -20,6 +20,7 @@ constexpr std::size_t MAX_MESSAGE_LENGTH = 1024;
 constexpr std::size_t BAKCLOG = 10;
 constexpr std::size_t MAX_EVENTS = 20;
 
+/// Auxiliar struct of 
 /// Represents each connection and its state.
 struct ConnectionStatus {
   std::array<std::uint8_t, MAX_MESSAGE_LENGTH> receive_buffer;
@@ -38,25 +39,30 @@ public:
   GopherServer& operator=(GopherServer&&) noexcept;      // Move assignment.
   inline ~GopherServer() noexcept { destroy(); }         // Destructor.
 
-  static std::expected<GopherServer, std::error_code> build(std::string_view, std::uint16_t) noexcept;
+  static std::expected<GopherServer, std::error_code> build(sockaddr_in) noexcept;
   
   std::expected<void, std::error_code> run() noexcept;
 
 private:
   inline GopherServer() noexcept : epoll_fd(-1), listen_fd(-1) {} // Default constructor.
 
+  /// -- Destructor helper.
   void destroy() noexcept;
 
-  std::expected<void, std::error_code> close_connection(tcp_utils::socket_t) noexcept;
+  /// -- Build auxiliar method.
+  static std::expected<epoll_t, std::error_code> create_epoll() noexcept;
+
+  /// -- Epoll modifiers.
   std::expected<void, std::error_code> add_connection(tcp_utils::socket_t) noexcept;
   std::expected<void, std::error_code> switchout_connection(tcp_utils::socket_t) noexcept;
+  void close_connection(tcp_utils::socket_t) noexcept;
   
+  /// -- Execution methods.
+  std::expected<void, std::error_code> handle_connection(tcp_utils::socket_t) noexcept;
+  std::expected<void, std::error_code> handle_incomming_connection() noexcept;
   static std::expected<void, std::error_code> connection_recv(tcp_utils::socket_t, ConnectionStatus&) noexcept;
-  
-  std::expected<void, std::error_code> handle_connection(tcp_utils::socket_t, ConnectionStatus&) noexcept;
-  
-  static std::expected<epoll_t, std::error_code> create_epoll() noexcept;
-  
+
+  /// -- Attributes.
   epoll_t epoll_fd;                                                      // epoll file descriptor.
   tcp_utils::socket_t listen_fd;                                         // Listen socket.
   std::unordered_map<tcp_utils::socket_t, ConnectionStatus> connections; // Connections map.
