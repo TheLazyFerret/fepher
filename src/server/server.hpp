@@ -19,8 +19,11 @@ using epoll_t = int;
 constexpr std::size_t MAX_MESSAGE_LENGTH = 1024;
 constexpr std::size_t BAKCLOG = 10;
 constexpr std::size_t MAX_EVENTS = 20;
+constexpr int EPOLL_WAIT_TIME = 3000; // 3 seconds.
 
-/// Auxiliar struct of 
+enum class EpollMode { Epollin, Epollout };
+
+/// Auxiliar struct of
 /// Represents each connection and its state.
 struct ConnectionStatus {
   std::array<std::uint8_t, MAX_MESSAGE_LENGTH> receive_buffer;
@@ -40,7 +43,7 @@ public:
   inline ~GopherServer() noexcept { destroy(); }         // Destructor.
 
   static std::expected<GopherServer, std::error_code> build(sockaddr_in) noexcept;
-  
+
   std::expected<void, std::error_code> run() noexcept;
 
 private:
@@ -54,19 +57,20 @@ private:
 
   /// -- Epoll modifiers.
   std::expected<void, std::error_code> add_connection(tcp_utils::socket_t) noexcept;
-  std::expected<void, std::error_code> switchout_connection(tcp_utils::socket_t) noexcept;
+  std::expected<void, std::error_code> switch_connection_mode(tcp_utils::socket_t, EpollMode) noexcept;
   void close_connection(tcp_utils::socket_t) noexcept;
-  
+
   /// -- Execution auxiliar methods.
   void handle_incomming_connection() noexcept;
   void handle_connection(tcp_utils::socket_t) noexcept;
   static std::expected<void, std::error_code> connection_recv(tcp_utils::socket_t, ConnectionStatus&) noexcept;
+
+  void close_listen_socket() noexcept;
 
   /// -- Attributes.
   epoll_t epoll_fd;                                                      // epoll file descriptor.
   tcp_utils::socket_t listen_fd;                                         // Listen socket.
   std::unordered_map<tcp_utils::socket_t, ConnectionStatus> connections; // Connections map.
 };
-
 
 } // namespace server

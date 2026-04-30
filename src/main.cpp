@@ -13,6 +13,10 @@
 using namespace server;
 
 int main() {
+  if (!common::set_signal_handler()) {
+    common::print_error("Error setting signal handler");
+    return EXIT_FAILURE;
+  }
   const auto addr = tcp_utils::make_sockaddr(0, "0.0.0.0").value();
   auto server_result = GopherServer::build(std::move(addr));
   if (!server_result) {

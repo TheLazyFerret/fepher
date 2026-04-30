@@ -57,7 +57,7 @@ void GopherServer::destroy() noexcept {
     close_connection(conn);
   }
   // Close the listen socket.
-  close(this->listen_fd);
+  close_listen_socket();
   // Close the epoll file descriptor.
   close(epoll_fd);
 }
@@ -124,14 +124,17 @@ std::expected<void, std::error_code> GopherServer::add_connection(socket_t socke
   return {};
 }
 
-/// Switch the connection from EPOLLIN to EPOLLOUT.
-/// Although its name say switch, is only one way.
-std::expected<void, std::error_code> GopherServer::switchout_connection(tcp_utils::socket_t socket) noexcept {
+/// Switch the connection mode between EPOLLIN and EPOLLOUT (+ always EPOLLET).
+std::expected<void, std::error_code> GopherServer::switch_connection_mode(socket_t socket, EpollMode mode) noexcept {
   // Check the connection is being watched.
   assert(this->connections.find(socket) != this->connections.end());
   struct epoll_event event{};
   event.data.fd = socket;
-  event.events = EPOLLOUT | EPOLLET; // Only output (and edge trigered).
+  if (mode == EpollMode::Epollin) {
+    event.events = EPOLLIN | EPOLLET; // Only output (and edge trigered).
+  } else if (mode == EpollMode::Epollout) {
+    event.events = EPOLLOUT | EPOLLET; // Only output (and edge trigered).
+  }
   if (epoll_ctl(this->epoll_fd, EPOLL_CTL_MOD, socket, &event) < 0) {
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
@@ -165,26 +168,51 @@ std::expected<epoll_t, std::error_code> GopherServer::create_epoll() noexcept {
 std::expected<void, std::error_code> GopherServer::run() noexcept {
   epoll_event events[MAX_EVENTS]{};
   while (true) {
-    const int nfds = epoll_wait(this->epoll_fd, events, MAX_EVENTS, -1);
+    const int nfds = epoll_wait(this->epoll_fd, events, MAX_EVENTS, EPOLL_WAIT_TIME);
+    const int errno_value = errno;
+    /// Check if the stop signal has been called.
+    if (!common::run) {
+      if (this->listen_fd >= 0) {
+        common::print_info("Server has received the stop signal.");
+        close_listen_socket();
+        common::print_info("Stopped incoming connections.");
+        common::print_info("Finishing pending connections.");
+      }
+      if (this->connections.empty()) {
+        break;
+      }
+    }
+    /// Check possible errors.
     if (nfds < 0) {
-      const int errno_value = errno;
-      common::print_error("Error calling epoll_wait");
+      /// Signal interruption, try again.
+      if (tcp_utils::try_again(errno_value)) {
+        common::print_warning("Signal interrupted epoll_wait");
+        continue;
+      }
+      /// Fatal error.
+      common::print_error("Fatal error calling epoll_wait");
       return std::unexpected(std::error_code(errno_value, std::generic_category()));
     }
+    /// Check all events.
     for (int n = 0; n < nfds; ++n) {
       if (events[n].data.fd == this->listen_fd) {
         handle_incomming_connection();
-        continue;
       } else {
         handle_connection(events[n].data.fd);
-        continue;
       }
     }
   }
   return {};
 }
 
-/// Auxiliar function of run, handle a single incoming connection.
+void GopherServer::close_listen_socket() noexcept {
+  if (this->listen_fd >= 0) {
+    close(this->listen_fd);
+    this->listen_fd = -1;
+  }
+}
+
+/// Auxiliar function of run(), handle a single incoming connection.
 void GopherServer::handle_incomming_connection() noexcept {
   // Attempt to accept the incoming connect
   const socket_t new_conn = accept(this->listen_fd, nullptr, nullptr);
@@ -204,9 +232,10 @@ void GopherServer::handle_incomming_connection() noexcept {
     common::print_warning("Failed to add the incoming connection.");
     return;
   }
+  common::print_info(std::format("New incoming connection with fd: {}", new_conn));
 }
 
-/// Auxiliar function of run, handles a single connection.
+/// Auxiliar function of run(), handles a single connection.
 /// Only return an error in case of a fatal error.
 void GopherServer::handle_connection(socket_t fd) noexcept {
   // If this assert fail, it is a programming error.
@@ -230,7 +259,7 @@ void GopherServer::handle_connection(socket_t fd) noexcept {
     const std::string buffer_str(cs.receive_buffer.begin(), cs.receive_buffer.begin() + cs.receive_index);
     if (gopher::string_end_in_terminator(buffer_str)) {
       // Finished receiving phase.
-      if (!switchout_connection(fd)) {
+      if (!switch_connection_mode(fd, EpollMode::Epollout)) {
         common::print_warning("Failed to change connection epoll mode. Connection closed.");
         close_connection(fd);
         return;
