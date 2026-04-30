@@ -61,4 +61,7 @@ bool try_again_later(int) noexcept;
 /// Check if the parameter (should be errno) is a connection closed (in most of his ways).
 bool connection_closed(int) noexcept;
 
+/// Check if the parameter (should be rrno) is EINTR, and should try again.
+bool try_again(int) noexcept;
+
 } // namespace tcp_utils

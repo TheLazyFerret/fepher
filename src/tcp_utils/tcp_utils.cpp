@@ -2,13 +2,13 @@
 
 #include "./tcp_utils.hpp"
 
+#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <ctime>
 #include <expected>
 #include <string>
 #include <system_error>
-#include <cassert>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -90,7 +90,7 @@ std::string tcp_utils::to_str_addr(in_addr_t inaddr) noexcept {
   char aux_dst[INET_ADDRSTRLEN];
   const in_addr aux_addr = {.s_addr = inaddr};
   // This should never fail. If it does, probably is a programming error.
-  assert (inet_ntop(AF_INET, &aux_addr, aux_dst, sizeof(aux_dst)) != nullptr);
+  assert(inet_ntop(AF_INET, &aux_addr, aux_dst, sizeof(aux_dst)) != nullptr);
   return {aux_dst};
 }
 
@@ -156,8 +156,17 @@ bool tcp_utils::connection_closed(int error) noexcept {
   }
 }
 
+/// Check if the parameter (should be errno) is a connection closed (in most of his ways).
 bool tcp_utils::try_again_later(int error) noexcept {
   if (error == EAGAIN || error == EWOULDBLOCK) {
+    return true;
+  }
+  return false;
+}
+
+/// Check if the parameter (should be rrno) is EINTR, and should try again.
+bool tcp_utils::try_again(int error) noexcept {
+  if (error == EINTR) {
     return true;
   }
   return false;
