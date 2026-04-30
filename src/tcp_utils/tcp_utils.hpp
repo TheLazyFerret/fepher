@@ -6,7 +6,6 @@
 #include <expected>
 #include <string>
 #include <system_error>
-#include <vector>
 
 #include <netinet/in.h>
 
@@ -53,12 +52,13 @@ std::expected<SocketAddress, std::error_code> get_socket_remote_addr(socket_t so
 std::expected<socket_t, std::error_code> create_listen_socket(
     std::uint16_t port, const std::string& addr, SocketOptions ops, std::uint32_t backlog) noexcept;
 
-/// Attempts to send all the bytes in the vector through the connected socket.
-/// The function assumes the socket is set in blocking mode.
-std::expected<void, std::error_code> blocking_send(socket_t socket, const std::vector<uint8_t>& buffer) noexcept;
-/// Attempts to receive at most len bytes. The data retrieved will be returned in the form
-/// of a vector, being its size the ammount of bytes retrieved.
-/// The function assumes the socket is set in blocking mode.
-std::expected<std::vector<uint8_t>, std::error_code> blocking_recv(socket_t socket, std::size_t len) noexcept;
+/// Attempts to accept an incoming connection.
+std::expected<socket_t, std::error_code> accept_connection(socket_t) noexcept;
+
+/// -- All this functions are for checking values.
+
+bool try_again_later(int) noexcept;
+
+bool connection_closed(int) noexcept;
 
 } // namespace tcp_utils

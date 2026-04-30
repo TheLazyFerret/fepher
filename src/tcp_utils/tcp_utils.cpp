@@ -8,7 +8,6 @@
 #include <expected>
 #include <string>
 #include <system_error>
-#include <vector>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -17,7 +16,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define RETURN_UNEXPECTED_EC_ERRNO return std::unexpected(std::error_code(errno, std::generic_category()))
 
 using namespace tcp_utils;
 
@@ -27,31 +25,31 @@ std::expected<void, std::error_code> tcp_utils::set_socket_opts(socket_t fd, Soc
   if (ops.so_reuseaddr) {
     constexpr int enable = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
-      RETURN_UNEXPECTED_EC_ERRNO;
+      return std::unexpected(std::error_code(errno, std::generic_category()));
     }
   }
   // Max time for sending.
   if (ops.so_sndtimeo > 0) {
     const timeval time{.tv_sec = static_cast<time_t>(ops.so_sndtimeo), .tv_usec = 0};
     if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &time, sizeof(time)) < 0) {
-      RETURN_UNEXPECTED_EC_ERRNO;
+      return std::unexpected(std::error_code(errno, std::generic_category()));
     }
   }
   // Max time for receiving
   if (ops.so_rcvtimeo > 0) {
     const timeval time{.tv_sec = static_cast<time_t>(ops.so_rcvtimeo), .tv_usec = 0};
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &time, sizeof(time)) < 0) {
-      RETURN_UNEXPECTED_EC_ERRNO;
+      return std::unexpected(std::error_code(errno, std::generic_category()));
     }
   }
   // Set the socket to non blocking.
   if (ops.o_nonblock) {
     const int current_flags = fcntl(fd, F_GETFL, 0);
     if (current_flags < 0) {
-      RETURN_UNEXPECTED_EC_ERRNO;
+      return std::unexpected(std::error_code(errno, std::generic_category()));
     }
     if (fcntl(fd, F_SETFL, (current_flags | O_NONBLOCK)) < 0) {
-      RETURN_UNEXPECTED_EC_ERRNO;
+      return std::unexpected(std::error_code(errno, std::generic_category()));
     }
   }
 
@@ -78,7 +76,7 @@ std::expected<in_addr_t, std::error_code> tcp_utils::to_net_addr(const std::stri
   const int aux_result = inet_pton(AF_INET, straddr.c_str(), &addr);
   // In the very unlikely the protocol is incorrect.
   if (aux_result < 0) {
-    RETURN_UNEXPECTED_EC_ERRNO;
+    return std::unexpected(std::error_code(errno, std::generic_category()));
   }
   // In the most likely of a bad formated address.
   if (aux_result == 0) {
@@ -102,7 +100,7 @@ std::expected<SocketAddress, std::error_code> tcp_utils::get_socket_local_addr(s
   sockaddr_in aux_addr{}; // Initialize it (empty).
   socklen_t aux_addr_size = sizeof(aux_addr);
   if (getsockname(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
-    RETURN_UNEXPECTED_EC_ERRNO;
+    return std::unexpected(std::error_code(errno, std::generic_category()));
   }
   // This should never fail.
   const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
@@ -115,7 +113,7 @@ std::expected<SocketAddress, std::error_code> tcp_utils::get_socket_remote_addr(
   sockaddr_in aux_addr{}; // Initialize it (empty).
   socklen_t aux_addr_size = sizeof(aux_addr);
   if (getpeername(fd, reinterpret_cast<sockaddr*>(&aux_addr), &aux_addr_size) < 0) {
-    RETURN_UNEXPECTED_EC_ERRNO;
+    return std::unexpected(std::error_code(errno, std::generic_category()));
   }
   // This should never fail.
   const std::string addr = tcp_utils::to_str_addr(aux_addr.sin_addr.s_addr).value();
@@ -137,7 +135,7 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
   // Create the socket
   const int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (socket_fd < 0) {
-    RETURN_UNEXPECTED_EC_ERRNO;
+    return std::unexpected(std::error_code(errno, std::generic_category()));
   }
   // Set the options.
   const auto result_set_sockops = tcp_utils::set_socket_opts(socket_fd, ops);
@@ -149,70 +147,35 @@ std::expected<int, std::error_code> tcp_utils::create_listen_socket(
   const auto aux_sockaddr = result_addr.value();
   if (bind(socket_fd, reinterpret_cast<const sockaddr*>(&aux_sockaddr), sizeof(aux_sockaddr)) < 0) {
     close(socket_fd);
-    RETURN_UNEXPECTED_EC_ERRNO;
+    return std::unexpected(std::error_code(errno, std::generic_category()));
   }
   // Marks the socket as a passive socket.
   if (listen(socket_fd, static_cast<int>(backlog)) < 0) {
     close(socket_fd);
-    RETURN_UNEXPECTED_EC_ERRNO;
+    return std::unexpected(std::error_code(errno, std::generic_category()));
   }
   return socket_fd;
 }
 
-/// Attempts to send all the bytes in the src vector. If no error occurs, all bytes are sent.
-/// The flag MSG_NOSIGNAL is used, so the program not crash if the connection is broken.
-/// The function assumes the socket is set in blocking mode.
-std::expected<void, std::error_code> tcp_utils::blocking_send(socket_t fd, const std::vector<uint8_t>& src) noexcept {
-  if (src.size() == 0) {
-    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+/// -- All this functions are for checking values.
+
+/// Check if the error is the kind of "connection closed".
+bool tcp_utils::connection_closed(int error) noexcept {
+  switch (error) {
+    case ECONNABORTED:
+    case EPIPE:
+    case ECONNRESET:
+    case ENOTCONN:
+    case ETIMEDOUT:
+      return true;
+    default:
+      return false;
   }
-  std::size_t total_bytes_sent = 0;
-  while (total_bytes_sent < src.size()) {
-    const ssize_t bytes_sent = send(fd, src.data() + total_bytes_sent, src.size() - total_bytes_sent, MSG_NOSIGNAL);
-    // Normal continue.
-    if (bytes_sent > 0) {
-      total_bytes_sent += static_cast<std::size_t>(bytes_sent);
-      continue;
-    }
-    // Retry the last sent block.
-    else if (bytes_sent < 0 && errno == EINTR) {
-      continue;
-    }
-    // Weird error (disconnected).
-    else if (bytes_sent == 0) {
-      return std::unexpected(std::make_error_code(std::errc::broken_pipe));
-    }
-    RETURN_UNEXPECTED_EC_ERRNO;
-  }
-  return {};
 }
 
-/// Attempts to receive at most len bytes from the connection.
-/// Will return a vector with the size of the number of bytes received.
-/// The function assumes the socket is set in blocking mode.
-std::expected<std::vector<uint8_t>, std::error_code> tcp_utils::blocking_recv(socket_t fd, std::size_t len) noexcept {
-  if (len == 0) {
-    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+bool tcp_utils::try_again_later(int error) noexcept {
+  if (error == EAGAIN || error == EWOULDBLOCK) {
+    return true;
   }
-  std::vector<uint8_t> buffer(len, 0);
-  std::size_t total_bytes_received = 0;
-  while (total_bytes_received < len) {
-    const ssize_t bytes_received = recv(fd, buffer.data() + total_bytes_received, len - total_bytes_received, 0);
-    // Normal continue.
-    if (bytes_received > 0) {
-      total_bytes_received += static_cast<std::size_t>(bytes_received);
-      continue;
-    }
-    // Retry the last received block.
-    else if (bytes_received < 0 && errno == EINTR) {
-      continue;
-    }
-    // No more data.
-    else if (bytes_received == 0) {
-      break;
-    }
-    RETURN_UNEXPECTED_EC_ERRNO;
-  }
-  buffer.resize(total_bytes_received);
-  return {buffer};
+  return false;
 }
