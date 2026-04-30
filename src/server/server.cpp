@@ -2,7 +2,7 @@
 
 #include "./server.hpp"
 #include "../common/common.hpp"
-// #include "../gopher/gopher.hpp"
+#include "../gopher/gopher.hpp"
 
 #include <cerrno>
 #include <expected>
@@ -17,6 +17,7 @@
 
 using namespace server;
 using namespace tcp_utils;
+using namespace gopher;
 
 /// -- BASIC CLASS STUFF
 
@@ -94,7 +95,7 @@ std::expected<GopherServer, std::error_code> GopherServer::build(sockaddr_in add
     const int errno_value = errno;
     close(listen_fd);
     close(epoll_fd);
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+    return std::unexpected(std::error_code(errno_value, std::generic_category()));
   }
   // Finishing creating the structure and return it.
   server.epoll_fd = epoll_fd;
@@ -107,18 +108,19 @@ std::expected<GopherServer, std::error_code> GopherServer::build(sockaddr_in add
 /// -- EPOLL MODIFIERS.
 
 /// Attempts to add a socket in the epoll.
+/// If it fails, it attempts to not modify the status.
 std::expected<void, std::error_code> GopherServer::add_connection(socket_t socket) noexcept {
   // Check if the socket is not already being watched.
   assert(this->connections.find(socket) == this->connections.end());
-  // Add it in the connections map.
-  this->connections.insert({socket, {}});
-  // Add it in the epoll.
+  // Add it in the epoll first.
   struct epoll_event event{};
   event.data.fd = socket;
   event.events = EPOLLIN | EPOLLET; // At the begin, all connections expect input. Edge trigered.
   if (epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, socket, &event) < 0) {
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
+  // Add it in the connections map.
+  this->connections.insert({socket, {}});
   return {};
 }
 
@@ -171,32 +173,106 @@ std::expected<void, std::error_code> GopherServer::run() noexcept {
     }
     for (int n = 0; n < nfds; ++n) {
       if (events[n].data.fd == this->listen_fd) {
-        if (const auto e = handle_incomming_connection(); !e) {
-          common::print_error("Fatal error handling incomming connection");
-          return std::unexpected(e.error());
-        }
+        handle_incomming_connection();
+        continue;
       } else {
-        if (const auto e = handle_connection(events[n].data.fd); !e) {
-          common::print_error("Fatal error handling connection");
-          return std::unexpected(e.error());
-        }
+        handle_connection(events[n].data.fd);
+        continue;
       }
     }
   }
   return {};
 }
 
-/// Auxiliar function of run, handles a single connection.
-std::expected<void, std::error_code> GopherServer::handle_connection(socket_t fd) noexcept { return {}; }
-
 /// Auxiliar function of run, handle a single incoming connection.
-std::expected<void, std::error_code> GopherServer::handle_incomming_connection() noexcept { return {}; }
+void GopherServer::handle_incomming_connection() noexcept {
+  // Attempt to accept the incoming connect
+  const socket_t new_conn = accept(this->listen_fd, nullptr, nullptr);
+  if (new_conn < 0) {
+    common::print_warning("Failed to accept incoming connection");
+    return;
+  }
+  // Make the incoming socket nonblocking.
+  if (!tcp_utils::set_socket_opts(new_conn, {.o_nonblock = true})) {
+    close(new_conn);
+    common::print_warning("Failed to put the incoming socket to nonblocking");
+    return;
+  }
+  // Add the connection.
+  if (!add_connection(new_conn)) {
+    close(new_conn);
+    common::print_warning("Failed to add the incoming connection.");
+    return;
+  }
+}
+
+/// Auxiliar function of run, handles a single connection.
+/// Only return an error in case of a fatal error.
+void GopherServer::handle_connection(socket_t fd) noexcept {
+  // If this assert fail, it is a programming error.
+  assert(this->connections.find(fd) != connections.end());
+  ConnectionStatus& cs = this->connections[fd];
+  // Receiving phase.
+  if (!cs.receiving_finished) {
+    if (!connection_recv(fd, cs)) {
+      // Fatal connection error.
+      common::print_warning("Error calling recv. Connection closed.");
+      close_connection(fd);
+      return;
+    }
+    // Check received data.
+    if (cs.receive_index >= cs.receive_buffer.size()) {
+      // Maximum buffer size exceeded.
+      common::print_warning("Connection exceeded maximum buffer size. Connection closed.");
+      close_connection(fd);
+      return;
+    }
+    const std::string buffer_str(cs.receive_buffer.begin(), cs.receive_buffer.begin() + cs.receive_index);
+    if (gopher::string_end_in_terminator(buffer_str)) {
+      // Finished receiving phase.
+      if (!switchout_connection(fd)) {
+        common::print_warning("Failed to change connection epoll mode. Connection closed.");
+        close_connection(fd);
+        return;
+      }
+      cs.receiving_finished = true;
+    }
+    return;
+  }
+  // Sending phase.
+  // Temporal
+  const std::string a = "PERRO\n";
+  send(fd, a.data(), a.size(), 0);
+  close_connection(fd);
+  // todo!
+}
 
 /// Recv function nonblocking wrapper.
 /// Grab all the data currently avaible in the socket.
 std::expected<void, std::error_code> GopherServer::connection_recv(socket_t fd, ConnectionStatus& st) noexcept {
   auto& buffer = st.receive_buffer;
   auto& buffer_index = st.receive_index;
-
+  while (buffer_index < buffer.size()) {
+    const ssize_t bytes_received = recv(fd, buffer.data() + buffer_index, buffer.size() - buffer_index, 0);
+    // Normal bytes received.
+    if (bytes_received > 0) {
+      buffer_index += static_cast<std::size_t>(bytes_received);
+      continue;
+    }
+    // Repeat immediately.
+    else if (bytes_received < 0 && tcp_utils::try_again(errno)) {
+      continue;
+    }
+    // Repeat later (for nonblocking socket).
+    else if (bytes_received < 0 && tcp_utils::try_again_later(errno)) {
+      break;
+    }
+    // Uncleanly closed connection.
+    else if (bytes_received == 0) {
+      return std::unexpected(std::make_error_code(std::errc::connection_aborted));
+    }
+    // Closed connection or other weird error.
+    return std::unexpected(std::error_code(errno, std::generic_category()));
+  }
   return {};
 }

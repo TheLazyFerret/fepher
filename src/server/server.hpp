@@ -57,9 +57,9 @@ private:
   std::expected<void, std::error_code> switchout_connection(tcp_utils::socket_t) noexcept;
   void close_connection(tcp_utils::socket_t) noexcept;
   
-  /// -- Execution methods.
-  std::expected<void, std::error_code> handle_connection(tcp_utils::socket_t) noexcept;
-  std::expected<void, std::error_code> handle_incomming_connection() noexcept;
+  /// -- Execution auxiliar methods.
+  void handle_incomming_connection() noexcept;
+  void handle_connection(tcp_utils::socket_t) noexcept;
   static std::expected<void, std::error_code> connection_recv(tcp_utils::socket_t, ConnectionStatus&) noexcept;
 
   /// -- Attributes.
