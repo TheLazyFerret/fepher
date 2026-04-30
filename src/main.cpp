@@ -5,14 +5,15 @@
 #include "common/common.hpp"
 
 #include <cstdlib>
+// #include <format>
 
 #include <sys/epoll.h>
 #include <unistd.h>
 
 using namespace server;
 
-int main(int argc, char** argv) {
-  const auto addr = tcp_utils::make_sockaddr(50000, "0.0.0.0").value();
+int main() {
+  const auto addr = tcp_utils::make_sockaddr(0, "0.0.0.0").value();
   auto server_result = GopherServer::build(std::move(addr));
   if (!server_result) {
     common::print_error("Failed to create server");
@@ -22,6 +23,5 @@ int main(int argc, char** argv) {
   if (!sv.run()) {
     return EXIT_FAILURE;
   }
-
   return EXIT_SUCCESS;
 }
