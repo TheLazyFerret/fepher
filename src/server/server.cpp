@@ -4,15 +4,17 @@
 #include "../common/common.hpp"
 #include "../gopher/gopher.hpp"
 
+#include <cassert>
 #include <cerrno>
+#include <ctime>
 #include <expected>
 #include <format>
-// #include <string_view>
-#include <cassert>
-#include <sys/ucontext.h>
+#include <sys/time.h>
 #include <system_error>
 
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
+#include <time.h>
 #include <unistd.h>
 
 using namespace server;
@@ -28,6 +30,7 @@ GopherServer::GopherServer(GopherServer&& e) noexcept {
   this->epoll_fd = e.epoll_fd;
   e.epoll_fd = -1;
   this->connections = std::move(e.connections);
+  this->timers = std::move(e.timers);
 }
 
 /// Move assignment.
@@ -42,14 +45,23 @@ GopherServer& GopherServer::operator=(GopherServer&& e) noexcept {
   this->epoll_fd = e.epoll_fd;
   e.epoll_fd = -1;
   this->connections = std::move(e.connections);
+  this->timers = std::move(e.timers);
   return *this;
 }
 
 /// Close all the inner file descriptors.
 void GopherServer::destroy() noexcept {
-  std::vector<socket_t> open_connections;
+  // Close all the timers.
+  std::vector<timer_t> pending_timers; // List of open timer file descriptor.
+  for (auto& timer : this->timers) {
+    pending_timers.push_back(timer.first);
+  }
+  for (auto& timer : pending_timers) {
+    close_timer(timer);
+  }
+  std::vector<socket_t> open_connections; // List of open connections file descriptor.
   // We move all the connections to an auxiliar vector, so not modyfing of the map while go through it.
-  for (auto& conn : connections) {
+  for (auto& conn : this->connections) {
     open_connections.push_back(conn.first);
   }
   for (auto& conn : open_connections) {
@@ -59,14 +71,16 @@ void GopherServer::destroy() noexcept {
   // Close the listen socket.
   close_listen_socket();
   // Close the epoll file descriptor.
-  close(epoll_fd);
+  if (epoll_fd >= 0) {
+    close(epoll_fd);
+  }
 }
 
 /// Build a new server instance.
 std::expected<GopherServer, std::error_code> GopherServer::build(sockaddr_in addr) noexcept {
   GopherServer server;
   // Create the listening socket.
-  const auto listenfd_result = tcp_utils::create_listen_socket(addr, BAKCLOG);
+  const auto listenfd_result = tcp_utils::create_listen_socket(addr, BACKLOG);
   if (!listenfd_result) {
     common::print_error("Failed to create listening socket");
     return std::unexpected(listenfd_result.error()); // Fordward the error.
@@ -113,14 +127,46 @@ std::expected<void, std::error_code> GopherServer::add_connection(socket_t socke
   // Check if the socket is not already being watched.
   assert(this->connections.find(socket) == this->connections.end());
   // Add it in the epoll first.
-  struct epoll_event event{};
-  event.data.fd = socket;
-  event.events = EPOLLIN | EPOLLET; // At the begin, all connections expect input. Edge trigered.
-  if (epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, socket, &event) < 0) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+  struct epoll_event socket_event{};
+  socket_event.data.fd = socket;
+  socket_event.events = EPOLLIN | EPOLLET; // At the begin, all connections expect input. Edge trigered.
+  if (epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, socket, &socket_event) < 0) {
+    const int errno_value = errno;
+    close(socket);
+    return std::unexpected(std::error_code(errno_value, std::generic_category()));
   }
-  // Add it in the connections map.
-  this->connections.insert({socket, {}});
+  // Creates the timer.
+  const timer_t timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+  if (timer_fd < 0) {
+    const int errno_value = errno;
+    close(socket);
+    return std::unexpected(std::error_code(errno_value, std::generic_category()));
+  }
+  // Set the values of the timer.
+  struct itimerspec timer_specs{};
+  timer_specs.it_value.tv_sec = static_cast<time_t>(CONNECTION_TIMEOUT);
+  if (timerfd_settime(timer_fd, 0, &timer_specs, nullptr) < 0) {
+    const int errno_value = errno;
+    close(socket);
+    close(timer_fd);
+    return std::unexpected(std::error_code(errno_value, std::generic_category()));
+  }
+  // Add the timer to the epoll.
+  struct epoll_event timer_event{};
+  timer_event.data.fd = timer_fd;
+  timer_event.events = EPOLLIN;
+  if (epoll_ctl(this->epoll_fd, EPOLL_CTL_ADD, timer_fd, &timer_event) < 0) {
+    const int errno_value = errno;
+    close(socket);
+    close(timer_fd);
+    return std::unexpected(std::error_code(errno_value, std::generic_category()));
+  }
+  // Add the connection to the connections map.
+  struct ConnectionStatus aux{};
+  aux.timer = timer_fd;
+  this->connections.insert({socket, std::move(aux)});
+  // Add the timer to the timer map.
+  this->timers.insert({timer_fd, socket});
   return {};
 }
 
@@ -141,7 +187,7 @@ std::expected<void, std::error_code> GopherServer::switch_connection_mode(socket
   return {};
 }
 
-/// Attempts to remove a socket from the epoll.
+/// Remove a connection socket from the epoll and the map.
 void GopherServer::close_connection(tcp_utils::socket_t socket) noexcept {
   // Check the connection is being watched.
   // If it is not, it is a programming error (my fault xD).
@@ -151,6 +197,17 @@ void GopherServer::close_connection(tcp_utils::socket_t socket) noexcept {
   // Now we close the socket. If it fails it is what it is.
   // It is optional remove it explicitly from the epoll.
   close(socket);
+}
+
+/// Remove a timer file descriptor from the epoll and the map.
+void GopherServer::close_timer(timer_t timer) noexcept {
+  // Check the timer exist in the timer map.
+  // If doesn't, programming error.
+  assert(this->timers.find(timer) != this->timers.end());
+  // Remove it from the map.
+  this->timers.erase(timer);
+  // Close the file descriptor and the remove it from the epoll.
+  close(timer);
 }
 
 /// Small wrapper for creating an empty epoll.
@@ -195,16 +252,23 @@ std::expected<void, std::error_code> GopherServer::run() noexcept {
     }
     /// Check all events.
     for (int n = 0; n < nfds; ++n) {
-      if (events[n].data.fd == this->listen_fd) {
+      const int current_fd = events[n].data.fd;
+      if (current_fd == this->listen_fd) {
         handle_incomming_connection();
-      } else {
+      } else if (this->connections.find(current_fd) != this->connections.end()) {
         handle_connection(events[n].data.fd);
+      } else if (this->timers.find(current_fd) != this->timers.end()) {
+        // send a connection timeout.
+        common::print_warning(std::format("Connection timeout for fd: {}", this->timers[current_fd]));
+        close_connection(this->timers[current_fd]);
+        close_timer(current_fd);
       }
     }
   }
   return {};
 }
 
+/// Close the inner listen socket, implicitly removing it from the epoll.
 void GopherServer::close_listen_socket() noexcept {
   if (this->listen_fd >= 0) {
     close(this->listen_fd);
@@ -215,24 +279,31 @@ void GopherServer::close_listen_socket() noexcept {
 /// Auxiliar function of run(), handle a single incoming connection.
 void GopherServer::handle_incomming_connection() noexcept {
   // Attempt to accept the incoming connect
-  const socket_t new_conn = accept(this->listen_fd, nullptr, nullptr);
-  if (new_conn < 0) {
-    common::print_warning("Failed to accept incoming connection");
-    return;
+  while (true) {
+    const socket_t new_conn = accept(this->listen_fd, nullptr, nullptr);
+    if (new_conn < 0) {
+      if (tcp_utils::try_again(errno)) {
+        continue;
+      } else if (tcp_utils::try_again_later(errno)) {
+        break;
+      }
+      common::print_warning("Failed to accept incoming connection");
+      return;
+    }
+    // Make the incoming socket nonblocking.
+    if (!tcp_utils::set_socket_opts(new_conn, {.o_nonblock = true})) {
+      close(new_conn);
+      common::print_warning("Failed to put the incoming socket to nonblocking");
+      continue; // Ignore this connection and continue with the rest.
+    }
+    // Add the connection.
+    // If it fails, the call closes the socket.
+    if (!add_connection(new_conn)) {
+      common::print_warning("Failed to add the incoming connection.");
+      continue; // Ignore this connection and continue with the rest.
+    }
+    common::print_info(std::format("New incoming connection with fd: {}", new_conn));
   }
-  // Make the incoming socket nonblocking.
-  if (!tcp_utils::set_socket_opts(new_conn, {.o_nonblock = true})) {
-    close(new_conn);
-    common::print_warning("Failed to put the incoming socket to nonblocking");
-    return;
-  }
-  // Add the connection.
-  if (!add_connection(new_conn)) {
-    close(new_conn);
-    common::print_warning("Failed to add the incoming connection.");
-    return;
-  }
-  common::print_info(std::format("New incoming connection with fd: {}", new_conn));
 }
 
 /// Auxiliar function of run(), handles a single connection.
@@ -246,6 +317,7 @@ void GopherServer::handle_connection(socket_t fd) noexcept {
     if (!connection_recv(fd, cs)) {
       // Fatal connection error.
       common::print_warning("Error calling recv. Connection closed.");
+      close_timer(cs.timer);
       close_connection(fd);
       return;
     }
@@ -253,6 +325,7 @@ void GopherServer::handle_connection(socket_t fd) noexcept {
     if (cs.receive_index >= cs.receive_buffer.size()) {
       // Maximum buffer size exceeded.
       common::print_warning("Connection exceeded maximum buffer size. Connection closed.");
+      close_timer(cs.timer);
       close_connection(fd);
       return;
     }
@@ -261,10 +334,14 @@ void GopherServer::handle_connection(socket_t fd) noexcept {
       // Finished receiving phase.
       if (!switch_connection_mode(fd, EpollMode::Epollout)) {
         common::print_warning("Failed to change connection epoll mode. Connection closed.");
+        close_timer(cs.timer);
         close_connection(fd);
         return;
       }
       cs.receiving_finished = true;
+      // Close the timer for receiving finished connections.
+      close_timer(cs.timer);
+      cs.timer = -1;
     }
     return;
   }
