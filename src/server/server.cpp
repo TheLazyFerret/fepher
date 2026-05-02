@@ -6,9 +6,11 @@
 
 #include <cassert>
 #include <cerrno>
+#include <cstdint>
 #include <ctime>
 #include <expected>
 #include <format>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <system_error>
 
@@ -171,16 +173,19 @@ std::expected<void, std::error_code> GopherServer::add_connection(socket_t socke
 }
 
 /// Switch the connection mode between EPOLLIN and EPOLLOUT (+ always EPOLLET).
-std::expected<void, std::error_code> GopherServer::switch_connection_mode(socket_t socket, EpollMode mode) noexcept {
+std::expected<void, std::error_code> GopherServer::switch_connection_mode(socket_t socket, EpollMode mode, EpollTriggerMode trigger) noexcept {
   // Check the connection is being watched.
   assert(this->connections.find(socket) != this->connections.end());
   struct epoll_event event{};
   event.data.fd = socket;
   if (mode == EpollMode::Epollin) {
-    event.events = EPOLLIN | EPOLLET; // Only output (and edge trigered).
+    event.events = EPOLLIN; // Only input.
   } else if (mode == EpollMode::Epollout) {
-    event.events = EPOLLOUT | EPOLLET; // Only output (and edge trigered).
+    event.events = EPOLLOUT; // Only output.
   }
+  if (trigger == EpollTriggerMode::Edge) {
+    event.events |= EPOLLET;
+  } 
   if (epoll_ctl(this->epoll_fd, EPOLL_CTL_MOD, socket, &event) < 0) {
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
@@ -313,7 +318,7 @@ void GopherServer::handle_connection(socket_t fd) noexcept {
   assert(this->connections.find(fd) != connections.end());
   ConnectionStatus& cs = this->connections[fd];
   // Receiving phase.
-  if (!cs.receiving_finished) {
+  if (cs.phase == ConnectionPhase::Receiving) { // Receiving phase.
     if (!connection_recv(fd, cs)) {
       // Fatal connection error.
       common::print_warning("Error calling recv. Connection closed.");
@@ -331,46 +336,60 @@ void GopherServer::handle_connection(socket_t fd) noexcept {
     }
     const std::string buffer_str(cs.receive_buffer.begin(), cs.receive_buffer.begin() + cs.receive_index);
     if (gopher::string_end_in_terminator(buffer_str)) {
-      // Finished receiving phase.
-      if (!switch_connection_mode(fd, EpollMode::Epollout)) {
+      // Finishing receiving phase.
+      if (!switch_connection_mode(fd, EpollMode::Epollout, EpollTriggerMode::Level)) {
         common::print_warning("Failed to change connection epoll mode. Connection closed.");
         close_timer(cs.timer);
         close_connection(fd);
         return;
       }
-      cs.receiving_finished = true;
-      // Close the timer for receiving finished connections.
-      close_timer(cs.timer);
+      close_timer(cs.timer); // Close the timer for receiving finished connections.
       cs.timer = -1;
+      cs.selector = gopher::get_selector_without_terminator(buffer_str);
+      cs.phase = ConnectionPhase::Processing;
     }
     return;
+  } else if (cs.phase == ConnectionPhase::Processing) { // Proccesing phase.
+    // TEMPORAL, JUST FOR TESTING.
+    cs.send_type = SendType::Message;
+    const std::string message_example = "DOG DOG DOG!\n";
+    cs.message_buffer = std::vector<uint8_t>(message_example.begin(), message_example.end());
+    cs.phase = ConnectionPhase::Sending;
   }
-  // Sending phase.
-  // Temporal
-  const std::string a = "PERRO\n";
-  send(fd, a.data(), a.size(), 0);
-  close_connection(fd);
-  // todo!
+  // Send phase.
+  // After processing, we attemp to send data (to avoid an infinite block in the epoll).
+  if (cs.send_type == SendType::Message) {
+    if (!connection_send_msg(fd, cs)) {
+      common::print_error("Error calling send(). Connection closed");
+      close_connection(fd);
+      return;
+    }
+    if (cs.message_buffer_index >= cs.message_buffer.size()) {
+      common::print_info("Complete message sent. Connection finished");
+      close_connection(fd);
+      return;
+    }
+  } else if (cs.send_type == SendType::File) {
+    // todo
+  }
 }
 
-/// Recv function nonblocking wrapper.
+/// Recv() function nonblocking wrapper.
 /// Grab all the data currently avaible in the socket.
 std::expected<void, std::error_code> GopherServer::connection_recv(socket_t fd, ConnectionStatus& st) noexcept {
   auto& buffer = st.receive_buffer;
   auto& buffer_index = st.receive_index;
   while (buffer_index < buffer.size()) {
-    const ssize_t bytes_received = recv(fd, buffer.data() + buffer_index, buffer.size() - buffer_index, 0);
+    const ssize_t bytes_received = recv(fd, buffer.data() + buffer_index, buffer.size() - buffer_index, MSG_NOSIGNAL);
+    const int errno_value = errno;
     // Normal bytes received.
     if (bytes_received > 0) {
       buffer_index += static_cast<std::size_t>(bytes_received);
       continue;
-    }
-    // Repeat immediately.
-    else if (bytes_received < 0 && tcp_utils::try_again(errno)) {
+    } else if (bytes_received < 0 && tcp_utils::try_again(errno_value)) { // Repeat immediately.
       continue;
-    }
-    // Repeat later (for nonblocking socket).
-    else if (bytes_received < 0 && tcp_utils::try_again_later(errno)) {
+    } else if (bytes_received < 0 &&
+               tcp_utils::try_again_later(errno_value)) { // Repeat later (for nonblocking socket).
       break;
     }
     // Uncleanly closed connection.
@@ -378,7 +397,30 @@ std::expected<void, std::error_code> GopherServer::connection_recv(socket_t fd, 
       return std::unexpected(std::make_error_code(std::errc::connection_aborted));
     }
     // Closed connection or other weird error.
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+    return std::unexpected(std::error_code(errno_value, std::generic_category()));
+  }
+  return {};
+}
+
+/// Message send() nonblocking wrapper. Should not be used to send large files.
+/// Avoid starvating setting a limit of the bytes a single call can send.
+std::expected<void, std::error_code> GopherServer::connection_send_msg(socket_t fd, ConnectionStatus& st) noexcept {
+  auto& buffer = st.message_buffer;
+  auto& buffer_index = st.message_buffer_index;
+  std::size_t total_bytes_sent = 0;
+  while (buffer_index < buffer.size() && total_bytes_sent < MAX_BYTES_PER_SEND) {
+    const ssize_t bytes_sent = send(fd, buffer.data() + buffer_index, buffer.size() - buffer_index, MSG_NOSIGNAL);
+    const int errno_value = errno;
+    if (bytes_sent > 0) {
+      buffer_index += static_cast<std::size_t>(bytes_sent);
+      total_bytes_sent += static_cast<std::size_t>(bytes_sent);
+      continue;
+    } else if (bytes_sent < 0 && tcp_utils::try_again(errno_value)) { // Repeat immediately.
+      continue;
+    } else if (bytes_sent < 0 && tcp_utils::try_again_later(errno_value)) { // Repeat later (for nonblocking socket).
+      break;
+    }
+    return std::unexpected(std::error_code(errno_value, std::generic_category()));
   }
   return {};
 }
