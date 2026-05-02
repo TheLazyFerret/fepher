@@ -156,7 +156,7 @@ bool tcp_utils::connection_closed(int error) noexcept {
   }
 }
 
-/// Check if the parameter (should be errno) is a connection closed (in most of his ways).
+/// Check if the parameter (should be errno) is of the type try again later (in a future call).
 bool tcp_utils::try_again_later(int error) noexcept {
   if (error == EAGAIN || error == EWOULDBLOCK) {
     return true;
