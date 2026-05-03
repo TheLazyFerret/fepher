@@ -1,5 +1,9 @@
 /// The actual server.
 /// The main class in this header, GopherServer, is the actual state machine.
+///
+/// This server only works with nonblocking sockets.
+/// During the receiving phase, the sockets are set edge triggered, while in the sending phase, are set to level
+/// trigger. This allow set max send() quotas, and avoid one connection cause starvation.
 
 #pragma once
 
@@ -26,12 +30,12 @@ constexpr std::size_t BACKLOG = 10;
 constexpr std::size_t MAX_EVENTS = 20;
 constexpr std::size_t CONNECTION_TIMEOUT = 10; // in seconds.
 constexpr std::size_t MAX_BYTES_PER_SEND = 1480;
-constexpr int EPOLL_WAIT_TIME = 3000;          // 3 seconds.
+constexpr int EPOLL_WAIT_TIME = 3000; // 3 seconds.
 
 const std::string FILESERVER_PATH = "/var/home/lazyferret/Descargas/"; // Temporal.
 
 enum class EpollMode { Epollin, Epollout };
-enum class EpollTriggerMode {Edge, Level };
+enum class EpollTriggerMode { Edge, Level };
 
 enum class ConnectionPhase { Receiving, Processing, Sending };
 
@@ -74,7 +78,8 @@ private:
 
   /// -- Epoll modifiers.
   std::expected<void, std::error_code> add_connection(tcp_utils::socket_t) noexcept;
-  std::expected<void, std::error_code> switch_connection_mode(tcp_utils::socket_t, EpollMode, EpollTriggerMode) noexcept;
+  std::expected<void, std::error_code> switch_connection_mode(
+      tcp_utils::socket_t, EpollMode, EpollTriggerMode) noexcept;
   void close_connection(tcp_utils::socket_t) noexcept;
   void close_timer(timer_t) noexcept;
 

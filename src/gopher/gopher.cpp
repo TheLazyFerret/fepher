@@ -3,13 +3,15 @@
 #include "./gopher.hpp"
 
 #include <cassert>
+#include <cerrno>
 #include <expected>
 #include <string>
 #include <string_view>
 #include <system_error>
 
-#include <limits.h>
+#include <dirent.h>
 #include <stdlib.h>
+#include <sys/types.h>
 
 using namespace gopher;
 
@@ -69,4 +71,30 @@ bool gopher::is_path_safe(std::string_view path, std::string_view fileserver_pat
     }
   }
   return true;
+}
+
+/// Return the gopher response when the selector points to a directory.
+std::expected<std::string, std::error_code> gopher::create_directory_responde(const std::string& path) noexcept {
+  std::string result;
+  DIR* dir = opendir(path.c_str());
+  if (dir == nullptr) {
+    return std::unexpected(std::error_code(errno, std::generic_category()));
+  }
+  const int dir_fd = dirfd(dir);
+  if (dir_fd < 0) {
+    closedir(dir);
+    return std::unexpected(std::error_code(errno, std::generic_category()));
+  }
+  while (true) {
+    errno = 0; // Reset errno to know the difference between an error and end of the loop.
+    struct dirent* dir_entry = readdir(dir);
+    if (dir_entry == nullptr && errno == 0) {
+      break;
+    } else if (dir_entry == nullptr && errno != 0) {
+      closedir(dir);
+      return std::unexpected(std::error_code(errno, std::generic_category()));
+    }
+  }
+  closedir(dir);
+  return result;
 }

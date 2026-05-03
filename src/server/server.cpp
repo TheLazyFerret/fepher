@@ -10,11 +10,10 @@
 #include <ctime>
 #include <expected>
 #include <format>
-#include <sys/socket.h>
-#include <sys/time.h>
 #include <system_error>
 
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
@@ -173,7 +172,8 @@ std::expected<void, std::error_code> GopherServer::add_connection(socket_t socke
 }
 
 /// Switch the connection mode between EPOLLIN and EPOLLOUT (+ always EPOLLET).
-std::expected<void, std::error_code> GopherServer::switch_connection_mode(socket_t socket, EpollMode mode, EpollTriggerMode trigger) noexcept {
+std::expected<void, std::error_code> GopherServer::switch_connection_mode(
+    socket_t socket, EpollMode mode, EpollTriggerMode trigger) noexcept {
   // Check the connection is being watched.
   assert(this->connections.find(socket) != this->connections.end());
   struct epoll_event event{};
@@ -185,7 +185,7 @@ std::expected<void, std::error_code> GopherServer::switch_connection_mode(socket
   }
   if (trigger == EpollTriggerMode::Edge) {
     event.events |= EPOLLET;
-  } 
+  }
   if (epoll_ctl(this->epoll_fd, EPOLL_CTL_MOD, socket, &event) < 0) {
     return std::unexpected(std::error_code(errno, std::generic_category()));
   }
@@ -404,6 +404,7 @@ std::expected<void, std::error_code> GopherServer::connection_recv(socket_t fd, 
 
 /// Message send() nonblocking wrapper. Should not be used to send large files.
 /// Avoid starvating setting a limit of the bytes a single call can send.
+/// Requires level triggered socket.
 std::expected<void, std::error_code> GopherServer::connection_send_msg(socket_t fd, ConnectionStatus& st) noexcept {
   auto& buffer = st.message_buffer;
   auto& buffer_index = st.message_buffer_index;
