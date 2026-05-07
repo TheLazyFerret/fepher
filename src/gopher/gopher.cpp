@@ -63,14 +63,14 @@ bool gopher::string_end_in_terminator(std::string_view selector) noexcept {
 }
 
 /// Return the received selector without the terminator (\r\n).
-std::string gopher::get_selector_without_terminator(std::string_view selector) noexcept {
+fs::path gopher::get_selector_without_terminator(std::string_view selector) noexcept {
   assert(selector.size() >= 2);
   assert(selector[selector.size() - 2] == TERMINATOR[0] && selector[selector.size() - 1] == TERMINATOR[1]);
   return std::string(selector.substr(0, selector.size() - 2));
 }
 
 /// Return the cannonical path of the parameter path.
-std::expected<fs::path, std::error_code> get_real_path(const fs::path& path) noexcept {
+std::expected<fs::path, std::error_code> gopher::get_real_path(const fs::path& path) noexcept {
   std::error_code er;
   const auto new_path = fs::canonical(path, er);
   if (er) {
@@ -81,14 +81,14 @@ std::expected<fs::path, std::error_code> get_real_path(const fs::path& path) noe
 
 /// Check if the path is inside of the base path.
 /// It expects the parameter are absolute paths.
-bool is_path_safe(const fs::path& base, const fs::path& path) noexcept {
+bool gopher::is_path_safe(const fs::path& base, const fs::path& path) noexcept {
   assert(base.is_absolute() && path.is_absolute());
   auto rel = path.lexically_relative(base);
   return !rel.empty() && *rel.begin() != "..";
 }
 
 std::expected<std::string, std::error_code> gopher::get_directory_responde(
-    const fs::path& base, const fs::path& path) noexcept {
+    const fs::path& base, const fs::path& path, std::string_view port, std::string_view addr) noexcept {
   std::error_code er;
   const auto dir_iterator = fs::directory_iterator(path, er);
   if (er) {
@@ -107,11 +107,11 @@ std::expected<std::string, std::error_code> gopher::get_directory_responde(
     response += filetype_result.value();
     response += filename;
     response += SEPARATOR;
-    response += get_selector_path(base, entry_path);
+    response += get_selector_response_path(base, entry_path);
     response += SEPARATOR;
-    response += "TEMP ADDR";
+    response += addr;
     response += SEPARATOR;
-    response += "TEMP PORT";
+    response += port;
     response += TERMINATOR;
   }
   response += ".";
@@ -120,7 +120,7 @@ std::expected<std::string, std::error_code> gopher::get_directory_responde(
 }
 
 /// Convert the system path into a gopher path.
-std::string gopher::get_selector_path(const fs::path& base, const fs::path& path) noexcept {
+std::string gopher::get_selector_response_path(const fs::path& base, const fs::path& path) noexcept {
   std::error_code er;
   auto result = fs::relative(path, base);
   if (er) {
@@ -130,4 +130,11 @@ std::string gopher::get_selector_path(const fs::path& base, const fs::path& path
     return "/";
   }
   return "/" + result.string();
+}
+
+fs::path gopher::get_path(const fs::path& base, const fs::path& sel) noexcept {
+  if (sel == "." || sel.empty()) {
+    return base;
+  }
+  return  base / sel.relative_path();
 }

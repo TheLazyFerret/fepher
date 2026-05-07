@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <ctime>
 #include <expected>
+#include <filesystem>
 #include <format>
+#include <string_view>
 #include <system_error>
 
 #include <sys/epoll.h>
@@ -17,6 +19,8 @@
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
+
+namespace fs = std::filesystem;
 
 using namespace server;
 using namespace tcp_utils;
@@ -32,6 +36,8 @@ GopherServer::GopherServer(GopherServer&& e) noexcept {
   e.epoll_fd = -1;
   this->connections = std::move(e.connections);
   this->timers = std::move(e.timers);
+  this->base_path = std::move(e.base_path);
+  this->server_address = std::move(e.server_address);
 }
 
 /// Move assignment.
@@ -47,6 +53,8 @@ GopherServer& GopherServer::operator=(GopherServer&& e) noexcept {
   e.epoll_fd = -1;
   this->connections = std::move(e.connections);
   this->timers = std::move(e.timers);
+  this->base_path = std::move(e.base_path);
+  this->server_address = std::move(e.server_address);
   return *this;
 }
 
@@ -78,8 +86,20 @@ void GopherServer::destroy() noexcept {
 }
 
 /// Build a new server instance.
-std::expected<GopherServer, std::error_code> GopherServer::build(sockaddr_in addr) noexcept {
+std::expected<GopherServer, std::error_code> GopherServer::build(
+    sockaddr_in addr, const fs::path& pa, std::string_view address) noexcept {
   GopherServer server;
+  if (!fs::is_directory(pa)) {
+    common::print_error("The parameter path is not a directory, or doesn't exist");
+    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+  }
+  const auto path_result = gopher::get_real_path(pa);
+  if (!path_result) {
+    common::print_error("Error getting the real cannonical path of the server's base");
+    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+  }
+  auto path = path_result.value();
+  path /= ""; // Append the "/" if it is not present.
   // Create the listening socket.
   const auto listenfd_result = tcp_utils::create_listen_socket(addr, BACKLOG);
   if (!listenfd_result) {
@@ -115,8 +135,10 @@ std::expected<GopherServer, std::error_code> GopherServer::build(sockaddr_in add
   // Finishing creating the structure and return it.
   server.epoll_fd = epoll_fd;
   server.listen_fd = listen_fd;
-  common::print_info(
-      std::format("Server opened in port: {}", tcp_utils::get_socket_local_addr(listen_fd).value().port));
+  server.base_path = path;
+  server.server_address = address;
+  common::print_info(std::format("Server opened in port: {} Server filesystem path: {}",
+      tcp_utils::get_socket_local_addr(listen_fd).value().port, server.base_path.string()));
   return {std::move(server)};
 }
 
@@ -350,15 +372,38 @@ void GopherServer::handle_connection(socket_t fd) noexcept {
     }
     return;
   } else if (cs.phase == ConnectionPhase::Processing) { // Proccesing phase.
-    // TEMPORAL, JUST FOR TESTING.
-    cs.send_type = SendType::Message;
-    const std::string message_example = "DOG DOG DOG!\n";
-    cs.message_buffer = std::vector<uint8_t>(message_example.begin(), message_example.end());
-    cs.phase = ConnectionPhase::Sending;
+    cs.selector = gopher::get_path(this->base_path, cs.selector);
+    const auto real_path_result = gopher::get_real_path(cs.selector);
+    if (!real_path_result) {
+      common::print_warning("Error trying to get the real path. Connection closed");
+      close_connection(fd);
+      return;
+    }
+    cs.selector = real_path_result.value();
+    if (!gopher::is_path_safe(this->base_path, cs.selector)) {
+      common::print_warning("Trying to access a unsafe path. Connection closed");
+      close_connection(fd);
+      return;
+    }
+    if (fs::is_directory(cs.selector)) {
+      const auto addr = tcp_utils::get_socket_local_addr(fd).value();
+      
+      const auto dir_response = gopher::get_directory_responde(this->base_path, cs.selector, std::format("{}", addr.port), this->server_address);
+      if (!dir_response) {
+        common::print_warning("Error trying to create the client response. Connection closed");
+        close_connection(fd);
+        return;
+      }
+      const auto response = dir_response.value();
+      cs.message_buffer = std::vector<std::uint8_t>(response.begin(), response.end());
+      cs.phase = ConnectionPhase::Sending;
+    } else { // File.
+      // todo.
+    }
   }
   // Send phase.
   // After processing, we attemp to send data (to avoid an infinite block in the epoll).
-  if (cs.send_type == SendType::Message) {
+  if (cs.send_type == SendType::Message) { // Both information message and directory responses.
     if (!connection_send_msg(fd, cs)) {
       common::print_error("Error calling send(). Connection closed");
       close_connection(fd);

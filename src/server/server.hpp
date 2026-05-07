@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <string>
 #include <system_error>
 #include <unordered_map>
@@ -44,7 +45,7 @@ enum class SendType { File, Message };
 /// Auxiliar struct of
 /// Represents each connection and its state.
 struct ConnectionStatus {
-  std::string selector;
+  std::filesystem::path selector;
   std::array<std::uint8_t, MAX_MESSAGE_LENGTH> receive_buffer;
   std::size_t receive_index = 0;
   std::vector<std::uint8_t> message_buffer;
@@ -63,7 +64,7 @@ public:
   GopherServer& operator=(GopherServer&&) noexcept;      // Move assignment.
   inline ~GopherServer() noexcept { destroy(); }         // Destructor.
 
-  static std::expected<GopherServer, std::error_code> build(sockaddr_in) noexcept;
+  static std::expected<GopherServer, std::error_code> build(sockaddr_in, const std::filesystem::path&, std::string_view) noexcept;
 
   std::expected<void, std::error_code> run() noexcept;
 
@@ -97,6 +98,10 @@ private:
   tcp_utils::socket_t listen_fd;                                         // Listen socket.
   std::unordered_map<tcp_utils::socket_t, ConnectionStatus> connections; // Connections map.
   std::unordered_map<timer_t, tcp_utils::socket_t> timers;               // Timmers map.
+
+  std::filesystem::path base_path; // Server files.
+
+  std::string server_address;
 };
 
 } // namespace server
