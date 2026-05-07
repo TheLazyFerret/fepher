@@ -12,5 +12,4 @@ set(SOURCE_FILES
 )
 
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
-
-target_compile_options(fepher PRIVATE -g -Wall -pedantic -Wextra -O2)
+target_compile_options(${PROJECT_NAME} PRIVATE -g -Wall -pedantic -Wextra -O2)
