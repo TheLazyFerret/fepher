@@ -1,19 +1,55 @@
-/// Gopher protocol  methods implementation.
+/// gopher implementation.
+
+/// Directory respose be like (see RFC 1436):
+/// <File type><name>\t<selector>\t<server address>\t<port>\r\n
+/// {Any number of those}
+/// .\r\n {And server close connection.}
+
+/// File respose be like (see RFC 1436):
+/// <Content of the file>
 
 #include "./gopher.hpp"
 
 #include <cassert>
-#include <cerrno>
 #include <expected>
-#include <string>
+#include <filesystem>
 #include <string_view>
 #include <system_error>
 
-#include <dirent.h>
-#include <stdlib.h>
-#include <sys/types.h>
-
 using namespace gopher;
+
+namespace fs = std::filesystem;
+
+/// Auxiliar function of get_gopher_type, return the gopher type depending of the file's extension.
+std::string extension_gopher_type(std::string_view extension) noexcept {
+  if (extension == "txt" || extension == "md") {
+    return "0";
+  } else if (extension == "png" || extension == "jpg" || extension == "jpeg") {
+    return "I";
+  } else if (extension == "gif") {
+    return "g";
+  }
+  return "9"; // Default to binary file.
+}
+
+std::expected<std::string, std::error_code> gopher::get_gopher_type(const std::filesystem::path& path) noexcept {
+  std::error_code err;
+  const auto file_status = fs::status(path, err);
+  if (err) {
+    return std::unexpected(err);
+  }
+  if (fs::is_directory(file_status)) {
+    return "1";
+  } else if (fs::is_regular_file(file_status)) {
+    if (path.has_extension()) {
+      return extension_gopher_type(path.extension().string());
+    } else {
+      return "9"; // Default to binary.
+    }
+  } else {
+    return std::unexpected(std::make_error_code(std::errc::file_exists));
+  }
+}
 
 /// Check if the string end in the terminator.
 bool gopher::string_end_in_terminator(std::string_view selector) noexcept {
@@ -33,68 +69,65 @@ std::string gopher::get_selector_without_terminator(std::string_view selector) n
   return std::string(selector.substr(0, selector.size() - 2));
 }
 
-/// Get the path from the selector. This function assumes the path parameter doesn't end with "\r\n".
-/// Basically just append '/' where is needed.
-std::string gopher::get_path(const std::string& path, const std::string& fileserver) noexcept {
-  assert(!gopher::string_end_in_terminator(path));
-  assert(fileserver.size() > 0 && fileserver.back() == '/'); // The fileserver path should end with '/'.
-  if (path.size() == 0) {
-    return fileserver;
-  } else if (path[0] == '/') {
-    return fileserver + path.substr(1); // Ignores the path '/'.
-  } else {
-    return fileserver + path;
+/// Return the cannonical path of the parameter path.
+std::expected<fs::path, std::error_code> get_real_path(const fs::path& path) noexcept {
+  std::error_code er;
+  const auto new_path = fs::canonical(path, er);
+  if (er) {
+    return std::unexpected(er);
   }
+  return new_path;
 }
 
-/// Return the real path, also checking if the path is correct.
-/// Basically a safer wrapper around realpath().
-std::expected<std::string, std::error_code> gopher::get_real_path(const std::string& path) noexcept {
-  char result[PATH_MAX]{};
-  if (realpath(path.c_str(), result) == nullptr) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
-  }
-  return {result};
+/// Check if the path is inside of the base path.
+/// It expects the parameter are absolute paths.
+bool is_path_safe(const fs::path& base, const fs::path& path) noexcept {
+  assert(base.is_absolute() && path.is_absolute());
+  auto rel = path.lexically_relative(base);
+  return !rel.empty() && *rel.begin() != "..";
 }
 
-/// Returns true if the path (assumes it is a complete and valid path, see get_real_path()) is inside the fileserver.
-/// The path must not have any type of symbolic/hard links.
-/// Also assumes fileserver_path is ended in '/'
-bool gopher::is_path_safe(std::string_view path, std::string_view fileserver_path) noexcept {
-  assert(fileserver_path.back() == '/');
-  if (fileserver_path.size() > path.size()) {
-    return false;
+std::expected<std::string, std::error_code> gopher::get_directory_responde(
+    const fs::path& base, const fs::path& path) noexcept {
+  std::error_code er;
+  const auto dir_iterator = fs::directory_iterator(path, er);
+  if (er) {
+    return std::unexpected(er);
   }
-  for (std::size_t n = 0; n < fileserver_path.size(); ++n) {
-    if (path[n] != fileserver_path[n]) {
-      return false;
+  std::string response; // The returned string with the complete response.
+  for (const auto& dir_entry : dir_iterator) {
+    // Directory iterator do not interate in ".." and ".".
+    const auto& entry_path = dir_entry.path(); // The complete path of the file.
+    const auto filename = entry_path.filename().string(); // The name of the file.
+    const auto filetype_result = gopher::get_gopher_type(entry_path); // The gopher type.
+    if (!filetype_result) {
+      return std::unexpected(filetype_result.error());
     }
+    // Append the new line to the response.
+    response += filetype_result.value();
+    response += filename;
+    response += SEPARATOR;
+    response += get_selector_path(base, entry_path);
+    response += SEPARATOR;
+    response += "TEMP ADDR";
+    response += SEPARATOR;
+    response += "TEMP PORT";
+    response += TERMINATOR;
   }
-  return true;
+  response += ".";
+  response += TERMINATOR;
+  return response;
 }
 
-/// Return the gopher response when the selector points to a directory.
-std::expected<std::string, std::error_code> gopher::create_directory_responde(const std::string& path) noexcept {
-  std::string result;
-  DIR* dir = opendir(path.c_str());
-  if (dir == nullptr) {
-    return std::unexpected(std::error_code(errno, std::generic_category()));
+/// Convert the system path into a gopher path.
+std::string gopher::get_selector_path(const fs::path& base, const fs::path& path) noexcept {
+  std::error_code er;
+  auto result = fs::relative(path, base);
+  if (er) {
+    return "/";
+  }  
+  if (result == ".") {
+    return "/";
   }
-  const int dir_fd = dirfd(dir);
-  if (dir_fd < 0) {
-    closedir(dir);
-    return std::unexpected(std::error_code(errno, std::generic_category()));
-  }
-  while (true) {
-    errno = 0; // Reset errno to know the difference between an error and end of the loop.
-    struct dirent* dir_entry = readdir(dir);
-    if (dir_entry == nullptr && errno == 0) {
-      break;
-    } else if (dir_entry == nullptr && errno != 0) {
-      closedir(dir);
-      return std::unexpected(std::error_code(errno, std::generic_category()));
-    }
-  }
-  closedir(dir);
-  return result;
+  return "/" + result.string();
 }

@@ -1,33 +1,29 @@
-/// Gopher protocol functions.
-/// In this "module" is where most of the gopher protocol logic is.
-
-
-/// Directory respose be like (see RFC 1436):
-/// <File type>\r<name>\r<selector>\r<server address>\r<port>\r\n
-/// {Any number of those}
-/// . {And server close connection.}
-
-/// File respose be like (see RFC 1436):
-/// <Content of the file>
-/// . {End with '.' in a separated line}
+/// Gopher logic reimplemented using modern c++ features
 
 #pragma once
 
 #include <expected>
-#include <string>
+#include <filesystem>
 #include <string_view>
 #include <system_error>
 
 namespace gopher {
 
-constexpr std::string_view TERMINATOR = "\r\n";
+static constexpr auto TERMINATOR = "\r\n";
+static constexpr auto SEPARATOR = "\t";
+
+
+std::expected<std::string, std::error_code> get_gopher_type(const std::filesystem::path&) noexcept;
 
 bool string_end_in_terminator(std::string_view) noexcept;
 std::string get_selector_without_terminator(std::string_view) noexcept;
-std::string get_path(const std::string& path, const std::string& fileserver) noexcept;
-std::expected<std::string, std::error_code> get_real_path(const std::string&) noexcept;
-bool is_path_safe(std::string_view path, std::string_view fileserver) noexcept;
 
-std::expected<std::string, std::error_code> create_directory_responde(const std::string& path) noexcept;
+std::expected<std::filesystem::path, std::error_code> get_real_path(const std::filesystem::path&) noexcept;
+bool is_path_safe(const std::filesystem::path&, const std::filesystem::path&) noexcept;
+
+std::string get_selector_path(const std::filesystem::path&, const std::filesystem::path&) noexcept;
+
+std::expected<std::string, std::error_code> get_directory_responde(
+    const std::filesystem::path&, const std::filesystem::path&) noexcept;
 
 } // namespace gopher
